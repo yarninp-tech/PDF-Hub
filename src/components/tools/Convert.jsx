@@ -3,7 +3,8 @@ import { useDropzone } from 'react-dropzone'
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
 import JSZip from 'jszip'
 import { loadPDF, pdfjsLib } from '../../utils/pdfUtils'
-import { downloadBytes, downloadBlob, getBaseName, formatBytes, parsePageRanges } from '../../utils/fileUtils'
+import { downloadBytes, downloadBlob, getBaseName, formatBytes } from '../../utils/fileUtils'
+import PageThumbnailGrid from '../PageThumbnailGrid'
 
 // ---- Image → PDF ----
 function ImageToPDF() {
@@ -378,9 +379,10 @@ function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPa
   const [localDoc, setLocalDoc] = useState(null)
   const [extracting, setExtracting] = useState(false)
   const [error, setError] = useState(null)
-  // pageTexts is { pageNum: number, text: string }[]
+  // pageTexts: { pageNum: number, text: string }[]
   const [pageTexts, setPageTexts] = useState([])
-  const [pageSelection, setPageSelection] = useState('')
+  // selectedPages: number[] of checked 1-based page numbers
+  const [selectedPages, setSelectedPages] = useState([])
   const [viewMode, setViewMode] = useState('combined')
   const [activePage, setActivePage] = useState(1)
   const [copied, setCopied] = useState(false)
@@ -390,25 +392,27 @@ function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPa
   const pdfDoc = localDoc || globalDoc
   const pageCount = localDoc ? localDoc.numPages : (globalPageCount || 0)
 
-  // Reset extracted text when the active doc changes
-  useEffect(() => {
+  // When a new doc is loaded: reset everything and pre-select all pages
+  useEffect(function() {
     if (pdfDoc && pdfDoc !== lastDocRef.current) {
       lastDocRef.current = pdfDoc
       setPageTexts([])
-      setPageSelection('')
       setCopied(false)
       setActivePage(1)
       setError(null)
+      var all = []
+      for (var i = 1; i <= pdfDoc.numPages; i++) all.push(i)
+      setSelectedPages(all)
     }
   }, [pdfDoc])
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     accept: { 'application/pdf': ['.pdf'] },
-    onDrop: async ([file]) => {
+    onDrop: async function(files) {
+      var file = files[0]
       if (!file) return
       setError(null)
       setPageTexts([])
-      setPageSelection('')
       setCopied(false)
       try {
         onOpenFile(file)
@@ -421,30 +425,41 @@ function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPa
     multiple: false,
   })
 
-  const handleExtract = async () => {
+  const handleExtract = async function() {
     if (!pdfFile) return
     setError(null)
     setExtracting(true)
     setCopied(false)
     try {
-      const arrayBuffer = await pdfFile.arrayBuffer()
-      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
+      console.log('[PDFToText] Starting extraction')
+      var arrayBuffer = await pdfFile.arrayBuffer()
+      console.log('[PDFToText] ArrayBuffer ready, byteLength:', arrayBuffer.byteLength)
 
-      const pagesToProcess = pageSelection.trim()
-        ? parsePageRanges(pageSelection, pdf.numPages)
-        : Array.from({ length: pdf.numPages }, (_, i) => i + 1)
+      var loadingTask = pdfjsLib.getDocument({ data: arrayBuffer, useWorkerFetch: false, isEvalSupported: false })
+      console.log('[PDFToText] getDocument called')
+      var pdf = await loadingTask.promise
+      console.log('[PDFToText] PDF loaded, numPages:', pdf.numPages)
 
-      const texts = []
-      for (let i = 1; i <= pdf.numPages; i++) {
-        if (!pagesToProcess.includes(i)) continue
-        const page = await pdf.getPage(i)
-        const textContent = await page.getTextContent()
-        const pageText = textContent.items.map(item => item.str).join(' ')
+      var pagesToProcess = selectedPages.length > 0
+        ? selectedPages
+        : (function() { var a = []; for (var i = 1; i <= pdf.numPages; i++) a.push(i); return a })()
+      console.log('[PDFToText] Pages to process:', pagesToProcess)
+
+      var texts = []
+      for (var i = 0; i < pagesToProcess.length; i++) {
+        var pageNum = pagesToProcess[i]
+        console.log('[PDFToText] Getting page', pageNum)
+        var page = await pdf.getPage(pageNum)
+        console.log('[PDFToText] Got page', pageNum, ', getting text content')
+        var textContent = await page.getTextContent()
+        console.log('[PDFToText] textContent items:', textContent.items.length)
+        var pageText = textContent.items.map(function(item) { return item.str }).join(' ')
           .replace(/[ \t]{2,}/g, ' ').trim()
-        texts.push({ pageNum: i, text: pageText })
+        console.log('[PDFToText] Page', pageNum, ':', pageText.length, 'chars')
+        texts.push({ pageNum: pageNum, text: pageText })
       }
 
-      const totalChars = texts.reduce((sum, t) => sum + t.text.length, 0)
+      var totalChars = texts.reduce(function(sum, t) { return sum + t.text.length }, 0)
       if (totalChars === 0) {
         throw new Error('SCANNED')
       }
@@ -452,6 +467,7 @@ function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPa
       setPageTexts(texts)
       setActivePage(1)
     } catch (err) {
+      console.error('[PDFToText] Extraction error:', err)
       if (err.message === 'SCANNED') {
         setError('This PDF appears to be scanned. No text could be extracted.')
       } else {
@@ -462,38 +478,37 @@ function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPa
     }
   }
 
-  const combinedText = pageTexts
-    .map(({ pageNum, text }) => `--- Page ${pageNum} ---\n${text}`)
+  var combinedText = pageTexts
+    .map(function(item) { return '--- Page ' + item.pageNum + ' ---\n' + item.text })
     .join('\n\n')
 
-  const displayText = viewMode === 'combined'
+  var displayText = viewMode === 'combined'
     ? combinedText
-    : (pageTexts[activePage - 1]?.text || '')
+    : (pageTexts[activePage - 1] ? pageTexts[activePage - 1].text : '')
 
-  const handleCopy = async () => {
+  const handleCopy = async function() {
     try {
       await navigator.clipboard.writeText(displayText)
       setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
+      setTimeout(function() { setCopied(false) }, 2000)
     } catch (_) {
       setError('Failed to copy to clipboard.')
     }
   }
 
-  const handleDownload = () => {
-    const blob = new Blob([combinedText], { type: 'text/plain;charset=utf-8' })
-    const baseName = getBaseName(pdfFile.name)
-    downloadBlob(blob, `${baseName}.txt`)
+  const handleDownload = function() {
+    var blob = new Blob([combinedText], { type: 'text/plain;charset=utf-8' })
+    var baseName = getBaseName(pdfFile.name)
+    downloadBlob(blob, baseName + '.txt')
   }
 
-  const handleReset = () => {
-    setLocalFile(null)
-    setLocalDoc(null)
-    setPageTexts([])
-    setError(null)
-    setCopied(false)
-    setActivePage(1)
-  }
+  // Label for the extract button during extraction
+  var extractingLabel = (function() {
+    if (selectedPages.length > 0 && selectedPages.length < pageCount) {
+      return 'Extracting pages: ' + selectedPages.join(', ') + '...'
+    }
+    return 'Extracting text...'
+  })()
 
   return (
     <div className="space-y-4">
@@ -537,17 +552,14 @@ function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPa
         </div>
       )}
 
-      {pdfFile && pageTexts.length === 0 && (
-        <div>
-          <label className="block text-sm text-gray-600 mb-1">
-            Pages to extract <span className="text-gray-400 text-xs">(optional)</span>
-          </label>
-          <input
-            type="text"
-            value={pageSelection}
-            onChange={e => setPageSelection(e.target.value)}
-            placeholder="e.g. 1, 3, 5-8 (default: all pages)"
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+      {/* Page thumbnail grid — shown when file loaded and text not yet extracted */}
+      {pdfFile && pdfDoc && pageTexts.length === 0 && (
+        <div className="bg-gray-50 border border-gray-200 rounded-xl p-3">
+          <p className="text-xs font-medium text-gray-500 mb-2">Select pages to extract</p>
+          <PageThumbnailGrid
+            pdfDoc={pdfDoc}
+            selectedPages={selectedPages}
+            onChange={setSelectedPages}
           />
         </div>
       )}
@@ -555,7 +567,7 @@ function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPa
       {pageTexts.length === 0 && (
         <button
           onClick={handleExtract}
-          disabled={extracting || !pdfFile}
+          disabled={extracting || !pdfFile || selectedPages.length === 0}
           className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-medium rounded-xl transition-colors flex items-center justify-center gap-2"
         >
           {extracting ? (
@@ -564,9 +576,9 @@ function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPa
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
               </svg>
-              Extracting text...
+              {extractingLabel}
             </>
-          ) : 'Extract Text'}
+          ) : selectedPages.length === 0 ? 'Select at least one page' : 'Extract Text'}
         </button>
       )}
 
@@ -576,7 +588,7 @@ function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPa
           <div className="flex items-center gap-2 flex-wrap">
             <div className="flex bg-gray-100 p-0.5 rounded-lg">
               <button
-                onClick={() => setViewMode('combined')}
+                onClick={function() { setViewMode('combined') }}
                 className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
                   viewMode === 'combined' ? 'bg-white shadow text-blue-600' : 'text-gray-500 hover:text-gray-700'
                 }`}
@@ -584,7 +596,7 @@ function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPa
                 All pages
               </button>
               <button
-                onClick={() => setViewMode('per-page')}
+                onClick={function() { setViewMode('per-page') }}
                 className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
                   viewMode === 'per-page' ? 'bg-white shadow text-blue-600' : 'text-gray-500 hover:text-gray-700'
                 }`}
@@ -596,7 +608,7 @@ function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPa
             {viewMode === 'per-page' && (
               <div className="flex items-center gap-1">
                 <button
-                  onClick={() => setActivePage(p => Math.max(1, p - 1))}
+                  onClick={function() { setActivePage(function(p) { return Math.max(1, p - 1) }) }}
                   disabled={activePage === 1}
                   className="p-1 rounded hover:bg-gray-100 disabled:opacity-40"
                 >
@@ -605,10 +617,10 @@ function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPa
                   </svg>
                 </button>
                 <span className="text-xs text-gray-600 px-1">
-                  Page {pageTexts[activePage - 1]?.pageNum} ({activePage} of {pageTexts.length})
+                  Page {pageTexts[activePage - 1] ? pageTexts[activePage - 1].pageNum : ''} ({activePage} of {pageTexts.length})
                 </span>
                 <button
-                  onClick={() => setActivePage(p => Math.min(pageTexts.length, p + 1))}
+                  onClick={function() { setActivePage(function(p) { return Math.min(pageTexts.length, p + 1) }) }}
                   disabled={activePage === pageTexts.length}
                   className="p-1 rounded hover:bg-gray-100 disabled:opacity-40"
                 >
