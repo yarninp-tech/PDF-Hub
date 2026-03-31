@@ -419,21 +419,39 @@ function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPa
   })
 
   const handleExtract = async () => {
-    if (!pdfDoc) return
+    if (!pdfFile) return
     setError(null)
     setExtracting(true)
     setCopied(false)
     try {
+      // Always load a fresh document from raw bytes.
+      // Reusing the shared pdfDoc causes internal pdfjs-dist v5 errors when
+      // the same document object is accessed by multiple tools concurrently.
+      const arrayBuffer = await pdfFile.arrayBuffer()
+      const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) })
+      const pdf = await loadingTask.promise
+
+      console.log('[PDFToText] Loaded fresh doc, numPages:', pdf.numPages)
+
       const texts = []
-      for (let i = 1; i <= pageCount; i++) {
-        const page = await pdfDoc.getPage(i)
-        const content = await page.getTextContent()
-        const pageText = content.items
-          .map(item => ('str' in item ? item.str : ''))
-          .join(' ')
-          .replace(/ {2,}/g, ' ')
-          .trim()
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i)
+        const textContent = await page.getTextContent()
+
+        // pdfjs-dist v4+ items array contains both TextItem and TextMarkedContent.
+        // Only TextItem has `str`; TextMarkedContent has `type` but no `str`.
+        // Use `hasEOL` (end-of-line flag on TextItem) to preserve line breaks.
+        let pageText = ''
+        for (const item of textContent.items) {
+          if (typeof item.str !== 'string') continue  // skip TextMarkedContent
+          pageText += item.str
+          if (item.hasEOL) pageText += '\n'
+        }
+
+        // Collapse multiple spaces but keep intentional newlines
+        pageText = pageText.replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim()
         texts.push(pageText)
+        console.log(`[PDFToText] Page ${i}: ${pageText.length} chars`)
       }
 
       const totalChars = texts.reduce((sum, t) => sum + t.length, 0)
@@ -443,6 +461,7 @@ function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPa
 
       setPageTexts(texts)
     } catch (err) {
+      console.error('[PDFToText] Extraction error:', err)
       if (err.message === 'SCANNED') {
         setError('This PDF appears to be scanned. No text could be extracted.')
       } else {
