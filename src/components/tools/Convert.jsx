@@ -4,6 +4,7 @@ import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
 import JSZip from 'jszip'
 import { Document, Packer, Paragraph, TextRun, HeadingLevel } from 'docx'
 import { saveAs } from 'file-saver'
+import { pdfjsLib } from '../../utils/pdfUtils'
 import { downloadBytes, downloadBlob, getBaseName, formatBytes } from '../../utils/fileUtils'
 import PageThumbnailGrid from '../PageThumbnailGrid'
 
@@ -374,15 +375,12 @@ function TextToPDF() {
   )
 }
 
-// ---- PDF → Text extraction ----
+// ---- PDF → Text extraction (pdfjs legacy build, no dynamic import) ----
 // Processes pages in batches of 5, yields to browser between batches.
 // onProgress(current, total) called after each page.
 // cancelRef.current = true stops the loop early.
 // Returns { pageNum, text }[]
 async function extractTextFromPDF(arrayBuffer, selectedPages, onProgress, cancelRef) {
-  const pdfjsLib = await import('pdfjs-dist')
-  pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`
-
   const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer.slice(0) })
   const pdf = await loadingTask.promise
   const totalPages = pdf.numPages
@@ -401,8 +399,8 @@ async function extractTextFromPDF(arrayBuffer, selectedPages, onProgress, cancel
       if (cancelRef && cancelRef.current) break
       const pageNum = pagesToExtract[j]
       const page = await pdf.getPage(pageNum)
-      const textContent = await page.getTextContent()
-      const items = textContent.items
+      const content = await page.getTextContent()
+      const items = content.items
       let pageText = ''
       for (let k = 0; k < items.length; k++) {
         pageText += items[k].str + ' '

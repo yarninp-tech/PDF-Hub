@@ -1,8 +1,6 @@
-import * as pdfjsLib from 'pdfjs-dist'
-import pdfjsWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf'
+import pdfjsWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.js?url'
 
-// Use the local bundled worker URL — required for pdfjs-dist v5 which ships only .mjs workers.
-// The CDN does not carry v5, so using a CDN URL causes a 404 and breaks loading entirely.
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl
 console.log('[pdfUtils] pdfjs version:', pdfjsLib.version, '— worker:', pdfjsWorkerUrl)
 
@@ -17,12 +15,7 @@ export async function loadPDF(file) {
   const bytes = new Uint8Array(arrayBuffer)
   let pdfDoc
   try {
-    // Use arrayBuffer.slice(0) to clone — pdfjs may neuter the underlying buffer
-    const loadingTask = pdfjsLib.getDocument({
-      data: bytes.slice(0),
-      useWorkerFetch: false,
-      isEvalSupported: false,
-    })
+    const loadingTask = pdfjsLib.getDocument({ data: bytes.slice(0) })
     pdfDoc = await loadingTask.promise
     console.log('[loadPDF]', file.name, '— pages:', pdfDoc.numPages)
   } catch (err) {

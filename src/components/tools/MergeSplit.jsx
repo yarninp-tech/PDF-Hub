@@ -111,7 +111,7 @@ export default function MergeSplit({ pdfFile: globalFile, pdfDoc: globalDoc, pag
   const [merging, setMerging] = useState(false)
   const [mergeProgress, setMergeProgress] = useState(null) // null | { current, total }
   const [mergeError, setMergeError] = useState(null)
-  const dragIndexRef = useRef(null)
+  const [dragIndex, setDragIndex] = useState(null)
   const [dragOverIndex, setDragOverIndex] = useState(null)
 
   // Sync globally loaded file as first item in merge list
@@ -241,11 +241,10 @@ export default function MergeSplit({ pdfFile: globalFile, pdfDoc: globalDoc, pag
   })
 
   // Drag-to-reorder
-  function handleDragStart(index) { dragIndexRef.current = index }
+  function handleDragStart(index) { setDragIndex(index) }
   function handleDragOver(index) { setDragOverIndex(index) }
-  function handleDragEnd() { dragIndexRef.current = null; setDragOverIndex(null) }
+  function handleDragEnd() { setDragIndex(null); setDragOverIndex(null) }
   function handleDrop(dropIndex) {
-    var dragIndex = dragIndexRef.current
     if (dragIndex === null || dragIndex === dropIndex) { setDragOverIndex(null); return }
     setMergeItems(function(prev) {
       var arr = prev.slice()
@@ -253,7 +252,7 @@ export default function MergeSplit({ pdfFile: globalFile, pdfDoc: globalDoc, pag
       arr.splice(dropIndex, 0, removed)
       return arr
     })
-    dragIndexRef.current = null
+    setDragIndex(null)
     setDragOverIndex(null)
   }
 
