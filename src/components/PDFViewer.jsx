@@ -6,38 +6,59 @@ export default function PDFViewer({ pdfDoc, pageCount }) {
   const [currentPage, setCurrentPage] = useState(1)
   const [loading, setLoading] = useState(false)
   const [jumpTo, setJumpTo] = useState('')
-  const canvasRefs = useRef([])
+  // canvasRefs is a stable object; we index by pageNum (1-based)
+  const canvasRefs = useRef({})
   const containerRef = useRef(null)
-  const renderTasksRef = useRef([])
+  // Track an incrementing render ID so stale renders self-abort
+  const renderIdRef = useRef(0)
 
   const renderPages = useCallback(async () => {
-    if (!pdfDoc) return
+    if (!pdfDoc || pageCount === 0) return
+
+    const renderId = ++renderIdRef.current
+    console.log(`[PDFViewer] renderPages called — renderId=${renderId}, pageCount=${pageCount}, scale=${scale}`)
     setLoading(true)
-    // Cancel any previous render tasks
-    renderTasksRef.current.forEach(t => { try { t.cancel() } catch (_) {} })
-    renderTasksRef.current = []
 
     for (let i = 1; i <= pageCount; i++) {
-      const canvas = canvasRefs.current[i - 1]
-      if (!canvas) continue
+      // Abort if a newer render has started
+      if (renderIdRef.current !== renderId) {
+        console.log(`[PDFViewer] renderId=${renderId} superseded, aborting`)
+        return
+      }
+
+      const canvas = canvasRefs.current[i]
+      if (!canvas) {
+        console.warn(`[PDFViewer] Canvas for page ${i} not yet in DOM, skipping`)
+        continue
+      }
+
       try {
         await renderPageToCanvas(pdfDoc, i, canvas, scale)
       } catch (err) {
         if (err.name !== 'RenderingCancelledException') {
-          console.error(`Error rendering page ${i}:`, err)
+          console.error(`[PDFViewer] Error rendering page ${i}:`, err)
         }
       }
     }
-    setLoading(false)
+
+    if (renderIdRef.current === renderId) {
+      setLoading(false)
+      console.log(`[PDFViewer] renderId=${renderId} complete`)
+    }
   }, [pdfDoc, pageCount, scale])
 
+  // Render whenever pdfDoc/pageCount/scale changes.
+  // We defer one tick to ensure canvas DOM nodes are committed first.
   useEffect(() => {
-    renderPages()
-  }, [renderPages])
+    if (!pdfDoc || pageCount === 0) return
+    console.log('[PDFViewer] useEffect fired — scheduling renderPages')
+    const id = requestAnimationFrame(() => renderPages())
+    return () => cancelAnimationFrame(id)
+  }, [pdfDoc, pageCount, scale, renderPages])
 
-  // Intersection observer to track current page
+  // Intersection observer to track current visible page
   useEffect(() => {
-    if (!containerRef.current) return
+    if (!containerRef.current || pageCount === 0) return
     const observer = new IntersectionObserver(
       (entries) => {
         entries.forEach(entry => {
@@ -70,7 +91,7 @@ export default function PDFViewer({ pdfDoc, pageCount }) {
       <div className="flex items-center gap-4 px-4 py-2 bg-white border-b border-gray-200 shadow-sm flex-shrink-0">
         <div className="flex items-center gap-2">
           <button
-            onClick={() => setScale(s => Math.max(0.5, s - 0.1))}
+            onClick={() => setScale(s => Math.max(0.5, parseFloat((s - 0.1).toFixed(1))))}
             className="p-1.5 rounded hover:bg-gray-100 text-gray-600"
             title="Zoom out"
           >
@@ -80,7 +101,7 @@ export default function PDFViewer({ pdfDoc, pageCount }) {
           </button>
           <span className="text-sm text-gray-600 w-12 text-center">{Math.round(scale * 100)}%</span>
           <button
-            onClick={() => setScale(s => Math.min(3, s + 0.1))}
+            onClick={() => setScale(s => Math.min(3, parseFloat((s + 0.1).toFixed(1))))}
             className="p-1.5 rounded hover:bg-gray-100 text-gray-600"
             title="Zoom in"
           >
@@ -121,11 +142,20 @@ export default function PDFViewer({ pdfDoc, pageCount }) {
 
       {/* Pages */}
       <div ref={containerRef} className="flex-1 overflow-y-auto bg-gray-100 p-4 flex flex-col items-center gap-4">
+        {pageCount === 0 && (
+          <p className="text-gray-400 text-sm mt-8">No PDF loaded.</p>
+        )}
         {Array.from({ length: pageCount }, (_, i) => i + 1).map(pageNum => (
           <div key={pageNum} data-page={pageNum} className="flex flex-col items-center gap-1">
             <div className="bg-white shadow-md rounded overflow-hidden">
               <canvas
-                ref={el => { canvasRefs.current[pageNum - 1] = el }}
+                ref={el => {
+                  if (el) {
+                    canvasRefs.current[pageNum] = el
+                  } else {
+                    delete canvasRefs.current[pageNum]
+                  }
+                }}
               />
             </div>
             <span className="text-xs text-gray-400">{pageNum}</span>

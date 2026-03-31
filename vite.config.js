@@ -4,6 +4,7 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   optimizeDeps: {
-    include: ['pdfjs-dist']
-  }
+    // pdfjs-dist v4+ is pure ESM — pre-bundling it causes worker resolution issues
+    exclude: ['pdfjs-dist'],
+  },
 })
