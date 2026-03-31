@@ -5,48 +5,49 @@ import JSZip from 'jszip'
 import { downloadBytes, downloadBlob, formatBytes, getBaseName, parsePageRanges } from '../../utils/fileUtils'
 import { loadPDF } from '../../utils/pdfUtils'
 
-function FileListItem({ file, index, total, onRemove, onMoveUp, onMoveDown }) {
+function FileListItem({ item, index, isDragOver, onRemove, onPageSelectionChange, onDragStart, onDragOver, onDragEnd, onDrop }) {
   return (
-    <div className="flex items-center gap-3 bg-white border border-gray-200 rounded-lg px-3 py-2 shadow-sm">
-      <span className="text-gray-400 text-sm w-5 text-center">{index + 1}</span>
+    <div
+      draggable
+      onDragStart={onDragStart}
+      onDragOver={e => { e.preventDefault(); onDragOver() }}
+      onDragEnd={onDragEnd}
+      onDrop={e => { e.preventDefault(); onDrop() }}
+      className={`flex items-center gap-2 bg-white border rounded-lg px-3 py-2 shadow-sm transition-colors ${isDragOver ? 'border-blue-400 bg-blue-50' : 'border-gray-200'}`}
+    >
+      {/* drag handle */}
+      <span className="text-gray-300 cursor-grab select-none text-base leading-none flex-shrink-0">⠿</span>
+      <span className="text-gray-400 text-sm w-5 text-center flex-shrink-0">{index + 1}</span>
       <svg className="w-5 h-5 text-red-400 flex-shrink-0" fill="currentColor" viewBox="0 0 24 24">
         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z"/>
       </svg>
       <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium text-gray-700 truncate">{file.name}</p>
-        <p className="text-xs text-gray-400">{formatBytes(file.size)}</p>
+        <p className="text-sm font-medium text-gray-700 truncate">{item.file.name}</p>
+        <p className="text-xs text-gray-400">
+          {formatBytes(item.file.size)}
+          {item.pageCount > 0 && ` · ${item.pageCount} page${item.pageCount !== 1 ? 's' : ''}`}
+        </p>
       </div>
-      <div className="flex items-center gap-1">
-        <button
-          onClick={() => onMoveUp(index)}
-          disabled={index === 0}
-          className="p-1 rounded hover:bg-gray-100 disabled:opacity-30"
-          title="Move up"
-        >
-          <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
-          </svg>
-        </button>
-        <button
-          onClick={() => onMoveDown(index)}
-          disabled={index === total - 1}
-          className="p-1 rounded hover:bg-gray-100 disabled:opacity-30"
-          title="Move down"
-        >
-          <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-          </svg>
-        </button>
-        <button
-          onClick={() => onRemove(index)}
-          className="p-1 rounded hover:bg-red-50 text-red-400"
-          title="Remove"
-        >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-          </svg>
-        </button>
+      <div className="flex items-center gap-1.5 flex-shrink-0">
+        <label className="text-xs text-gray-500 whitespace-nowrap">Pages:</label>
+        <input
+          type="text"
+          value={item.pageSelection}
+          onChange={e => onPageSelectionChange(e.target.value)}
+          placeholder={item.pageCount > 0 ? `1-${item.pageCount}` : 'all'}
+          title="e.g. 1, 3, 5-8 (default: all pages)"
+          className="w-24 px-1.5 py-0.5 border border-gray-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+        />
       </div>
+      <button
+        onClick={onRemove}
+        className="p-1 rounded hover:bg-red-50 text-red-400 flex-shrink-0"
+        title="Remove"
+      >
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+        </svg>
+      </button>
     </div>
   )
 }
@@ -56,9 +57,12 @@ export default function MergeSplit({ pdfFile: globalFile, pdfDoc: globalDoc, pag
   const [tab, setTab] = useState('merge')
 
   // Merge state (always independent — multiple files)
-  const [mergeFiles, setMergeFiles] = useState([])
+  // mergeItems: { id: string, file: File, pageCount: number, pageSelection: string }[]
+  const [mergeItems, setMergeItems] = useState([])
   const [merging, setMerging] = useState(false)
   const [mergeError, setMergeError] = useState(null)
+  const dragIndexRef = useRef(null)
+  const [dragOverIndex, setDragOverIndex] = useState(null)
 
   // Split state — use global file as default, allow local override
   const [localSplitFile, setLocalSplitFile] = useState(null)
@@ -75,7 +79,17 @@ export default function MergeSplit({ pdfFile: globalFile, pdfDoc: globalDoc, pag
 
   const { getRootProps: getMergeRootProps, getInputProps: getMergeInputProps, isDragActive: isMergeDragActive } = useDropzone({
     accept: { 'application/pdf': ['.pdf'] },
-    onDrop: (accepted) => setMergeFiles(prev => [...prev, ...accepted]),
+    onDrop: async (accepted) => {
+      const newItems = await Promise.all(accepted.map(async (file) => {
+        let pageCount = 0
+        try {
+          const { pdfDoc } = await loadPDF(file)
+          pageCount = pdfDoc.numPages
+        } catch (_) {}
+        return { id: `${file.name}-${Date.now()}-${Math.random()}`, file, pageCount, pageSelection: '' }
+      }))
+      setMergeItems(prev => [...prev, ...newItems])
+    },
     multiple: true,
   })
 
@@ -97,28 +111,32 @@ export default function MergeSplit({ pdfFile: globalFile, pdfDoc: globalDoc, pag
     multiple: false,
   })
 
-  const handleMoveUp = (index) => {
-    setMergeFiles(prev => {
+  const handleDragStart = (index) => { dragIndexRef.current = index }
+  const handleDragOver = (index) => { setDragOverIndex(index) }
+  const handleDragEnd = () => { dragIndexRef.current = null; setDragOverIndex(null) }
+  const handleDrop = (dropIndex) => {
+    const dragIndex = dragIndexRef.current
+    if (dragIndex === null || dragIndex === dropIndex) { setDragOverIndex(null); return }
+    setMergeItems(prev => {
       const arr = [...prev]
-      ;[arr[index - 1], arr[index]] = [arr[index], arr[index - 1]]
+      const [removed] = arr.splice(dragIndex, 1)
+      arr.splice(dropIndex, 0, removed)
       return arr
     })
-  }
-
-  const handleMoveDown = (index) => {
-    setMergeFiles(prev => {
-      const arr = [...prev]
-      ;[arr[index], arr[index + 1]] = [arr[index + 1], arr[index]]
-      return arr
-    })
+    dragIndexRef.current = null
+    setDragOverIndex(null)
   }
 
   const handleRemove = (index) => {
-    setMergeFiles(prev => prev.filter((_, i) => i !== index))
+    setMergeItems(prev => prev.filter((_, i) => i !== index))
+  }
+
+  const handlePageSelectionChange = (index, value) => {
+    setMergeItems(prev => prev.map((item, i) => i === index ? { ...item, pageSelection: value } : item))
   }
 
   const handleMerge = async () => {
-    if (mergeFiles.length < 2) {
+    if (mergeItems.length < 2) {
       setMergeError('Please add at least 2 PDF files to merge.')
       return
     }
@@ -126,11 +144,18 @@ export default function MergeSplit({ pdfFile: globalFile, pdfDoc: globalDoc, pag
     setMerging(true)
     try {
       const merged = await PDFDocument.create()
-      for (const file of mergeFiles) {
-        const bytes = await file.arrayBuffer()
+      for (const item of mergeItems) {
+        const bytes = await item.file.arrayBuffer()
         const doc = await PDFDocument.load(bytes)
-        const pages = await merged.copyPages(doc, doc.getPageIndices())
-        pages.forEach(p => merged.addPage(p))
+        let pageIndices
+        if (item.pageSelection.trim()) {
+          const pages = parsePageRanges(item.pageSelection, doc.getPageCount())
+          pageIndices = pages.map(p => p - 1)
+        } else {
+          pageIndices = doc.getPageIndices()
+        }
+        const copied = await merged.copyPages(doc, pageIndices)
+        copied.forEach(p => merged.addPage(p))
       }
       const bytes = await merged.save()
       downloadBytes(bytes, 'merged.pdf')
@@ -233,18 +258,21 @@ export default function MergeSplit({ pdfFile: globalFile, pdfDoc: globalDoc, pag
             <p className="text-gray-400 text-sm mt-1">or click to browse</p>
           </div>
 
-          {mergeFiles.length > 0 && (
+          {mergeItems.length > 0 && (
             <div className="space-y-2">
-              <p className="text-sm text-gray-500 font-medium">{mergeFiles.length} file{mergeFiles.length > 1 ? 's' : ''} selected</p>
-              {mergeFiles.map((file, i) => (
+              <p className="text-sm text-gray-500 font-medium">{mergeItems.length} file{mergeItems.length > 1 ? 's' : ''} selected · drag to reorder</p>
+              {mergeItems.map((item, i) => (
                 <FileListItem
-                  key={`${file.name}-${i}`}
-                  file={file}
+                  key={item.id}
+                  item={item}
                   index={i}
-                  total={mergeFiles.length}
-                  onRemove={handleRemove}
-                  onMoveUp={handleMoveUp}
-                  onMoveDown={handleMoveDown}
+                  isDragOver={dragOverIndex === i}
+                  onRemove={() => handleRemove(i)}
+                  onPageSelectionChange={(val) => handlePageSelectionChange(i, val)}
+                  onDragStart={() => handleDragStart(i)}
+                  onDragOver={() => handleDragOver(i)}
+                  onDragEnd={handleDragEnd}
+                  onDrop={() => handleDrop(i)}
                 />
               ))}
             </div>
@@ -254,7 +282,7 @@ export default function MergeSplit({ pdfFile: globalFile, pdfDoc: globalDoc, pag
 
           <button
             onClick={handleMerge}
-            disabled={merging || mergeFiles.length < 2}
+            disabled={merging || mergeItems.length < 2}
             className="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-medium rounded-xl transition-colors flex items-center justify-center gap-2"
           >
             {merging ? (

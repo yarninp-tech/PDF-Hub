@@ -3,7 +3,7 @@ import { useDropzone } from 'react-dropzone'
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
 import JSZip from 'jszip'
 import { loadPDF, pdfjsLib } from '../../utils/pdfUtils'
-import { downloadBytes, downloadBlob, getBaseName, formatBytes } from '../../utils/fileUtils'
+import { downloadBytes, downloadBlob, getBaseName, formatBytes, parsePageRanges } from '../../utils/fileUtils'
 
 // ---- Image → PDF ----
 function ImageToPDF() {
@@ -378,11 +378,12 @@ function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPa
   const [localDoc, setLocalDoc] = useState(null)
   const [extracting, setExtracting] = useState(false)
   const [error, setError] = useState(null)
+  // pageTexts is { pageNum: number, text: string }[]
   const [pageTexts, setPageTexts] = useState([])
+  const [pageSelection, setPageSelection] = useState('')
   const [viewMode, setViewMode] = useState('combined')
   const [activePage, setActivePage] = useState(1)
   const [copied, setCopied] = useState(false)
-  // Track last doc we extracted for, to reset extracted text on file change
   const lastDocRef = useRef(null)
 
   const pdfFile = localFile || globalFile
@@ -394,6 +395,7 @@ function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPa
     if (pdfDoc && pdfDoc !== lastDocRef.current) {
       lastDocRef.current = pdfDoc
       setPageTexts([])
+      setPageSelection('')
       setCopied(false)
       setActivePage(1)
       setError(null)
@@ -406,6 +408,7 @@ function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPa
       if (!file) return
       setError(null)
       setPageTexts([])
+      setPageSelection('')
       setCopied(false)
       try {
         onOpenFile(file)
@@ -424,44 +427,31 @@ function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPa
     setExtracting(true)
     setCopied(false)
     try {
-      // Always load a fresh document from raw bytes.
-      // Reusing the shared pdfDoc causes internal pdfjs-dist v5 errors when
-      // the same document object is accessed by multiple tools concurrently.
       const arrayBuffer = await pdfFile.arrayBuffer()
-      const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) })
-      const pdf = await loadingTask.promise
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
 
-      console.log('[PDFToText] Loaded fresh doc, numPages:', pdf.numPages)
+      const pagesToProcess = pageSelection.trim()
+        ? parsePageRanges(pageSelection, pdf.numPages)
+        : Array.from({ length: pdf.numPages }, (_, i) => i + 1)
 
       const texts = []
       for (let i = 1; i <= pdf.numPages; i++) {
+        if (!pagesToProcess.includes(i)) continue
         const page = await pdf.getPage(i)
         const textContent = await page.getTextContent()
-
-        // pdfjs-dist v4+ items array contains both TextItem and TextMarkedContent.
-        // Only TextItem has `str`; TextMarkedContent has `type` but no `str`.
-        // Use `hasEOL` (end-of-line flag on TextItem) to preserve line breaks.
-        let pageText = ''
-        for (const item of textContent.items) {
-          if (typeof item.str !== 'string') continue  // skip TextMarkedContent
-          pageText += item.str
-          if (item.hasEOL) pageText += '\n'
-        }
-
-        // Collapse multiple spaces but keep intentional newlines
-        pageText = pageText.replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim()
-        texts.push(pageText)
-        console.log(`[PDFToText] Page ${i}: ${pageText.length} chars`)
+        const pageText = textContent.items.map(item => item.str).join(' ')
+          .replace(/[ \t]{2,}/g, ' ').trim()
+        texts.push({ pageNum: i, text: pageText })
       }
 
-      const totalChars = texts.reduce((sum, t) => sum + t.length, 0)
+      const totalChars = texts.reduce((sum, t) => sum + t.text.length, 0)
       if (totalChars === 0) {
         throw new Error('SCANNED')
       }
 
       setPageTexts(texts)
+      setActivePage(1)
     } catch (err) {
-      console.error('[PDFToText] Extraction error:', err)
       if (err.message === 'SCANNED') {
         setError('This PDF appears to be scanned. No text could be extracted.')
       } else {
@@ -473,12 +463,12 @@ function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPa
   }
 
   const combinedText = pageTexts
-    .map((t, i) => `--- Page ${i + 1} ---\n${t}`)
+    .map(({ pageNum, text }) => `--- Page ${pageNum} ---\n${text}`)
     .join('\n\n')
 
   const displayText = viewMode === 'combined'
     ? combinedText
-    : (pageTexts[activePage - 1] || '')
+    : (pageTexts[activePage - 1]?.text || '')
 
   const handleCopy = async () => {
     try {
@@ -547,6 +537,21 @@ function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPa
         </div>
       )}
 
+      {pdfFile && pageTexts.length === 0 && (
+        <div>
+          <label className="block text-sm text-gray-600 mb-1">
+            Pages to extract <span className="text-gray-400 text-xs">(optional)</span>
+          </label>
+          <input
+            type="text"
+            value={pageSelection}
+            onChange={e => setPageSelection(e.target.value)}
+            placeholder="e.g. 1, 3, 5-8 (default: all pages)"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+      )}
+
       {pageTexts.length === 0 && (
         <button
           onClick={handleExtract}
@@ -599,10 +604,12 @@ function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPa
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
                   </svg>
                 </button>
-                <span className="text-xs text-gray-600 px-1">Page {activePage} / {pageCount}</span>
+                <span className="text-xs text-gray-600 px-1">
+                  Page {pageTexts[activePage - 1]?.pageNum} ({activePage} of {pageTexts.length})
+                </span>
                 <button
-                  onClick={() => setActivePage(p => Math.min(pageCount, p + 1))}
-                  disabled={activePage === pageCount}
+                  onClick={() => setActivePage(p => Math.min(pageTexts.length, p + 1))}
+                  disabled={activePage === pageTexts.length}
                   className="p-1 rounded hover:bg-gray-100 disabled:opacity-40"
                 >
                   <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">

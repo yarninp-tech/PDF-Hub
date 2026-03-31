@@ -53,15 +53,14 @@ export default function App() {
             </div>
           )}
 
+          {/* Loading banner — slim bar so ToolPanel stays mounted and tab state is preserved */}
           {loading && (
-            <div className="flex items-center justify-center flex-1">
-              <div className="flex items-center gap-3 text-blue-600">
-                <svg className="w-6 h-6 animate-spin" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                </svg>
-                <span className="font-medium">Loading PDF...</span>
-              </div>
+            <div className="bg-blue-50 border-b border-blue-100 px-4 py-2 flex items-center gap-2 text-blue-600 text-sm flex-shrink-0">
+              <svg className="w-4 h-4 animate-spin flex-shrink-0" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+              </svg>
+              Loading PDF…
             </div>
           )}
 
@@ -71,25 +70,24 @@ export default function App() {
             </div>
           )}
 
-          {!loading && (
-            <div className="flex-1 overflow-hidden flex">
-              <div className={`flex flex-col ${showViewer && pdfDoc ? 'w-1/2' : 'flex-1'} overflow-auto`}>
-                <ToolPanel
-                  activeTool={activeTool}
-                  pdfFile={pdfFile}
-                  pdfDoc={pdfDoc}
-                  pageCount={pageCount}
-                  onOpenFile={handleFile}
-                />
-              </div>
-
-              {showViewer && pdfDoc && (
-                <div className="w-1/2 border-l border-gray-200 flex flex-col">
-                  <PDFViewer pdfDoc={pdfDoc} pageCount={pageCount} />
-                </div>
-              )}
+          {/* ToolPanel is always rendered — never unmounted — so sub-component tab state survives file loads */}
+          <div className="flex-1 overflow-hidden flex">
+            <div className={`flex flex-col ${showViewer && pdfDoc ? 'w-1/2' : 'flex-1'} overflow-auto`}>
+              <ToolPanel
+                activeTool={activeTool}
+                pdfFile={pdfFile}
+                pdfDoc={pdfDoc}
+                pageCount={pageCount}
+                onOpenFile={handleFile}
+              />
             </div>
-          )}
+
+            {showViewer && pdfDoc && (
+              <div className="w-1/2 border-l border-gray-200 flex flex-col">
+                <PDFViewer pdfDoc={pdfDoc} pageCount={pageCount} />
+              </div>
+            )}
+          </div>
         </main>
       </div>
     </div>
