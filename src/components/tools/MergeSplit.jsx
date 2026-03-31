@@ -51,22 +51,27 @@ function FileListItem({ file, index, total, onRemove, onMoveUp, onMoveDown }) {
   )
 }
 
-export default function MergeSplit() {
+// pdfFile/pdfDoc/pageCount: global file from App.jsx — pre-populates the Split tab
+export default function MergeSplit({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPageCount, onOpenFile }) {
   const [tab, setTab] = useState('merge')
 
-  // Merge state
+  // Merge state (always independent — multiple files)
   const [mergeFiles, setMergeFiles] = useState([])
   const [merging, setMerging] = useState(false)
   const [mergeError, setMergeError] = useState(null)
 
-  // Split state
-  const [splitFile, setSplitFile] = useState(null)
-  const [splitDoc, setSplitDoc] = useState(null)
-  const [splitPageCount, setSplitPageCount] = useState(0)
+  // Split state — use global file as default, allow local override
+  const [localSplitFile, setLocalSplitFile] = useState(null)
+  const [localSplitDoc, setLocalSplitDoc] = useState(null)
   const [splitMode, setSplitMode] = useState('individual')
   const [splitRange, setSplitRange] = useState('')
   const [splitting, setSplitting] = useState(false)
   const [splitError, setSplitError] = useState(null)
+
+  // Effective split source: local override takes priority, then global
+  const splitFile = localSplitFile || globalFile
+  const splitDoc = localSplitDoc || globalDoc
+  const splitPageCount = localSplitDoc ? localSplitDoc.numPages : (globalPageCount || 0)
 
   const { getRootProps: getMergeRootProps, getInputProps: getMergeInputProps, isDragActive: isMergeDragActive } = useDropzone({
     accept: { 'application/pdf': ['.pdf'] },
@@ -81,9 +86,10 @@ export default function MergeSplit() {
       setSplitError(null)
       try {
         const { pdfDoc } = await loadPDF(file)
-        setSplitFile(file)
-        setSplitDoc(pdfDoc)
-        setSplitPageCount(pdfDoc.numPages)
+        // Update global state AND local override so header reflects new file
+        onOpenFile(file)
+        setLocalSplitFile(null)
+        setLocalSplitDoc(null)
       } catch (err) {
         setSplitError(err.message)
       }
@@ -137,7 +143,7 @@ export default function MergeSplit() {
 
   const handleSplit = async () => {
     if (!splitDoc || !splitFile) {
-      setSplitError('Please load a PDF file first.')
+      setSplitError('Please load a PDF file first (or upload one globally above).')
       return
     }
     setSplitError(null)
@@ -288,17 +294,15 @@ export default function MergeSplit() {
                 </svg>
                 <div>
                   <p className="font-medium text-gray-700">{splitFile.name}</p>
-                  <p className="text-sm text-gray-400">{splitPageCount} pages · {formatBytes(splitFile.size)}</p>
+                  <p className="text-sm text-gray-400">{splitPageCount} page{splitPageCount !== 1 ? 's' : ''} · {formatBytes(splitFile.size)}</p>
+                  {!localSplitFile && <p className="text-xs text-blue-500 mt-0.5">Using globally loaded file</p>}
                 </div>
               </div>
-              <button
-                onClick={() => { setSplitFile(null); setSplitDoc(null); setSplitPageCount(0) }}
-                className="text-gray-400 hover:text-red-500 p-1"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
+              {/* Drop a new file to replace */}
+              <div {...getSplitRootProps()} className="cursor-pointer">
+                <input {...getSplitInputProps()} />
+                <span className="text-xs text-blue-500 hover:text-blue-700 underline">Change</span>
+              </div>
             </div>
           )}
 

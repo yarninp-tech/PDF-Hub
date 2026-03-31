@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useDropzone } from 'react-dropzone'
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib'
-import { renderPageToCanvas, loadPDF } from '../../utils/pdfUtils'
+import { renderPageToCanvas } from '../../utils/pdfUtils'
 import { downloadBytes, getBaseName } from '../../utils/fileUtils'
 
 const TOOLS = [
@@ -12,53 +12,52 @@ const TOOLS = [
   { id: 'note', label: 'Note', icon: '📌' },
 ]
 
-export default function Annotate() {
-  const [pdfFile, setPdfFile] = useState(null)
-  const [pdfDoc, setPdfDoc] = useState(null)
-  const [pageCount, setPageCount] = useState(0)
+// pdfFile, pdfDoc, pageCount come from global state in App.jsx
+export default function Annotate({ pdfFile, pdfDoc, pageCount, onOpenFile }) {
   const [currentPage, setCurrentPage] = useState(1)
   const [activeTool, setActiveTool] = useState('highlight')
   const [color, setColor] = useState('#ffff00')
   const [brushSize, setBrushSize] = useState(4)
-  const [annotations, setAnnotations] = useState({}) // { pageNum: [...shapes] }
+  const [annotations, setAnnotations] = useState({})
   const [history, setHistory] = useState([])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
-  const [notes, setNotes] = useState([]) // sticky notes
-  const [editingNote, setEditingNote] = useState(null)
+  const [notes, setNotes] = useState([])
 
   const pdfCanvasRef = useRef(null)
   const annotCanvasRef = useRef(null)
   const isDrawing = useRef(false)
   const startPos = useRef({ x: 0, y: 0 })
   const currentPath = useRef([])
+  // Track which pdfDoc we last initialised for, to reset per-file state
+  const lastDocRef = useRef(null)
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     accept: { 'application/pdf': ['.pdf'] },
-    onDrop: async ([file]) => {
-      if (!file) return
-      setError(null)
-      try {
-        const { pdfDoc: doc } = await loadPDF(file)
-        setPdfFile(file)
-        setPdfDoc(doc)
-        setPageCount(doc.numPages)
-        setCurrentPage(1)
-        setAnnotations({})
-        setNotes([])
-        setHistory([])
-      } catch (err) {
-        setError(err.message)
-      }
-    },
+    onDrop: ([file]) => file && onOpenFile(file),
     multiple: false,
+    noClick: !!pdfFile,
+    noKeyboard: !!pdfFile,
   })
 
-  // Render PDF page
+  // Reset annotation state when a new file is loaded
+  useEffect(() => {
+    if (pdfDoc && pdfDoc !== lastDocRef.current) {
+      lastDocRef.current = pdfDoc
+      setAnnotations({})
+      setNotes([])
+      setHistory([])
+      setCurrentPage(1)
+      setError(null)
+    }
+  }, [pdfDoc])
+
+  // Render PDF page whenever page or doc changes
   useEffect(() => {
     if (!pdfDoc || !pdfCanvasRef.current) return
     renderPageToCanvas(pdfDoc, currentPage, pdfCanvasRef.current, 1.4)
       .then(() => redrawAnnotations())
+      .catch(err => setError('Render error: ' + err.message))
   }, [pdfDoc, currentPage])
 
   const getCanvasPos = (e) => {
@@ -125,19 +124,12 @@ export default function Annotate() {
     isDrawing.current = true
     const pos = getCanvasPos(e)
     startPos.current = pos
-
-    if (activeTool === 'draw') {
-      currentPath.current = [pos]
-    }
-
+    if (activeTool === 'draw') currentPath.current = [pos]
     if (activeTool === 'text') {
       const text = prompt('Enter text:')
-      if (text) {
-        addAnnotation({ type: 'text', x: pos.x, y: pos.y, text, color, fontSize: 16 })
-      }
+      if (text) addAnnotation({ type: 'text', x: pos.x, y: pos.y, text, color, fontSize: 16 })
       isDrawing.current = false
     }
-
     if (activeTool === 'note') {
       setNotes(prev => [...prev, { id: Date.now(), x: pos.x, y: pos.y, page: currentPage, text: '' }])
       isDrawing.current = false
@@ -147,7 +139,6 @@ export default function Annotate() {
   const handleMouseMove = (e) => {
     if (!isDrawing.current || !annotCanvasRef.current) return
     const pos = getCanvasPos(e)
-
     if (activeTool === 'draw') {
       currentPath.current.push(pos)
       const ctx = annotCanvasRef.current.getContext('2d')
@@ -163,7 +154,6 @@ export default function Annotate() {
       ctx.stroke()
       ctx.restore()
     }
-
     if (activeTool === 'highlight' || activeTool === 'rectangle') {
       const ctx = annotCanvasRef.current.getContext('2d')
       redrawAnnotations()
@@ -188,20 +178,16 @@ export default function Annotate() {
     if (!isDrawing.current) return
     isDrawing.current = false
     const pos = getCanvasPos(e)
-
     if (activeTool === 'draw') {
-      if (currentPath.current.length > 1) {
+      if (currentPath.current.length > 1)
         addAnnotation({ type: 'draw', path: [...currentPath.current], color, size: brushSize })
-      }
       currentPath.current = []
     }
-
     if (activeTool === 'highlight' || activeTool === 'rectangle') {
       const w = pos.x - startPos.current.x
       const h = pos.y - startPos.current.y
-      if (Math.abs(w) > 2 && Math.abs(h) > 2) {
+      if (Math.abs(w) > 2 && Math.abs(h) > 2)
         addAnnotation({ type: activeTool, x: startPos.current.x, y: startPos.current.y, w, h, color })
-      }
     }
   }
 
@@ -215,7 +201,7 @@ export default function Annotate() {
   }
 
   const handleUndo = () => {
-    if (history.length === 0) return
+    if (!history.length) return
     const prev = history[history.length - 1]
     setHistory(h => h.slice(0, -1))
     setAnnotations(prev)
@@ -251,33 +237,30 @@ export default function Annotate() {
             const y = height - (ann.y + ann.h) * scaleY
             const w = ann.w * scaleX
             const h = Math.abs(ann.h * scaleY)
-            const hexColor = ann.color
-            const r = parseInt(hexColor.slice(1, 3), 16) / 255
-            const g = parseInt(hexColor.slice(3, 5), 16) / 255
-            const b = parseInt(hexColor.slice(5, 7), 16) / 255
+            const r = parseInt(ann.color.slice(1, 3), 16) / 255
+            const g = parseInt(ann.color.slice(3, 5), 16) / 255
+            const b = parseInt(ann.color.slice(5, 7), 16) / 255
             if (ann.type === 'highlight') {
               page.drawRectangle({ x, y, width: w, height: h, color: rgb(r, g, b), opacity: 0.35 })
             } else {
               page.drawRectangle({ x, y, width: w, height: h, borderColor: rgb(r, g, b), borderWidth: 1, opacity: 0 })
             }
           } else if (ann.type === 'draw') {
-            // Draw freehand lines
             for (let i = 1; i < ann.path.length; i++) {
-              const x1 = ann.path[i - 1].x * scaleX
-              const y1 = height - ann.path[i - 1].y * scaleY
-              const x2 = ann.path[i].x * scaleX
-              const y2 = height - ann.path[i].y * scaleY
-              const hexColor = ann.color
-              const r = parseInt(hexColor.slice(1, 3), 16) / 255
-              const g = parseInt(hexColor.slice(3, 5), 16) / 255
-              const b = parseInt(hexColor.slice(5, 7), 16) / 255
-              page.drawLine({ start: { x: x1, y: y1 }, end: { x: x2, y: y2 }, color: rgb(r, g, b), thickness: ann.size * scaleX })
+              const r = parseInt(ann.color.slice(1, 3), 16) / 255
+              const g = parseInt(ann.color.slice(3, 5), 16) / 255
+              const b = parseInt(ann.color.slice(5, 7), 16) / 255
+              page.drawLine({
+                start: { x: ann.path[i-1].x * scaleX, y: height - ann.path[i-1].y * scaleY },
+                end: { x: ann.path[i].x * scaleX, y: height - ann.path[i].y * scaleY },
+                color: rgb(r, g, b),
+                thickness: ann.size * scaleX,
+              })
             }
           } else if (ann.type === 'text') {
-            const hexColor = ann.color
-            const r = parseInt(hexColor.slice(1, 3), 16) / 255
-            const g = parseInt(hexColor.slice(3, 5), 16) / 255
-            const b = parseInt(hexColor.slice(5, 7), 16) / 255
+            const r = parseInt(ann.color.slice(1, 3), 16) / 255
+            const g = parseInt(ann.color.slice(3, 5), 16) / 255
+            const b = parseInt(ann.color.slice(5, 7), 16) / 255
             page.drawText(ann.text, {
               x: ann.x * scaleX,
               y: height - ann.y * scaleY,
@@ -289,8 +272,7 @@ export default function Annotate() {
         }
       }
 
-      const outBytes = await pdfLibDoc.save()
-      downloadBytes(outBytes, `${getBaseName(pdfFile.name)}_annotated.pdf`)
+      downloadBytes(await pdfLibDoc.save(), `${getBaseName(pdfFile.name)}_annotated.pdf`)
     } catch (err) {
       setError('Failed to save annotated PDF: ' + err.message)
     } finally {
@@ -298,6 +280,7 @@ export default function Annotate() {
     }
   }
 
+  // No file loaded — show dropzone
   if (!pdfFile) {
     return (
       <div className="p-6 max-w-3xl mx-auto w-full">
@@ -354,7 +337,7 @@ export default function Annotate() {
 
         <div className="h-6 w-px bg-gray-300" />
 
-        <button onClick={handleUndo} disabled={history.length === 0} className="px-3 py-1.5 rounded-lg text-sm bg-gray-100 hover:bg-gray-200 disabled:opacity-40">
+        <button onClick={handleUndo} disabled={!history.length} className="px-3 py-1.5 rounded-lg text-sm bg-gray-100 hover:bg-gray-200 disabled:opacity-40">
           Undo
         </button>
         <button onClick={handleClear} className="px-3 py-1.5 rounded-lg text-sm bg-gray-100 hover:bg-gray-200">
@@ -363,29 +346,24 @@ export default function Annotate() {
 
         <div className="h-6 w-px bg-gray-300" />
 
-        {/* Page navigation */}
         <div className="flex items-center gap-2">
           <button
             onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
             disabled={currentPage === 1}
             className="p-1 rounded hover:bg-gray-100 disabled:opacity-40"
-          >
-            ◀
-          </button>
+          >◀</button>
           <span className="text-sm text-gray-600">Page {currentPage} / {pageCount}</span>
           <button
             onClick={() => setCurrentPage(p => Math.min(pageCount, p + 1))}
             disabled={currentPage === pageCount}
             className="p-1 rounded hover:bg-gray-100 disabled:opacity-40"
-          >
-            ▶
-          </button>
+          >▶</button>
         </div>
 
         <button
           onClick={handleSave}
           disabled={saving}
-          className="ml-auto px-4 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-60 flex items-center gap-1"
+          className="ml-auto px-4 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-60"
         >
           {saving ? 'Saving...' : '⬇ Download'}
         </button>
@@ -393,7 +371,6 @@ export default function Annotate() {
 
       {error && <p className="text-red-500 text-sm px-4 py-2 bg-red-50">{error}</p>}
 
-      {/* Canvas area */}
       <div className="flex-1 overflow-auto bg-gray-100 flex items-start justify-center p-4">
         <div className="relative bg-white shadow-xl" style={{ display: 'inline-block' }}>
           <canvas ref={pdfCanvasRef} />
@@ -405,15 +382,10 @@ export default function Annotate() {
             onMouseUp={handleMouseUp}
             onMouseLeave={handleMouseUp}
           />
-          {/* Sticky notes for current page */}
           {notes
             .filter(n => n.page === currentPage)
             .map(note => (
-              <div
-                key={note.id}
-                className="sticky-note"
-                style={{ left: note.x, top: note.y }}
-              >
+              <div key={note.id} className="sticky-note" style={{ left: note.x, top: note.y }}>
                 <textarea
                   value={note.text}
                   onChange={e => setNotes(prev => prev.map(n => n.id === note.id ? { ...n, text: e.target.value } : n))}
@@ -422,9 +394,7 @@ export default function Annotate() {
                 <button
                   onClick={() => setNotes(prev => prev.filter(n => n.id !== note.id))}
                   className="absolute top-1 right-1 text-gray-400 hover:text-red-500 text-xs leading-none"
-                >
-                  ×
-                </button>
+                >×</button>
               </div>
             ))}
         </div>

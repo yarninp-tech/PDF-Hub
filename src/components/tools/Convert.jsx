@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useDropzone } from 'react-dropzone'
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
 import JSZip from 'jszip'
@@ -162,12 +162,15 @@ function ImageToPDF() {
 }
 
 // ---- PDF → Images ----
-function PDFToImages() {
-  const [pdfFile, setPdfFile] = useState(null)
-  const [pdfDoc, setPdfDoc] = useState(null)
-  const [pageCount, setPageCount] = useState(0)
+function PDFToImages({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPageCount, onOpenFile }) {
+  const [localFile, setLocalFile] = useState(null)
+  const [localDoc, setLocalDoc] = useState(null)
   const [converting, setConverting] = useState(false)
   const [error, setError] = useState(null)
+
+  const pdfFile = localFile || globalFile
+  const pdfDoc = localDoc || globalDoc
+  const pageCount = localDoc ? localDoc.numPages : (globalPageCount || 0)
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     accept: { 'application/pdf': ['.pdf'] },
@@ -175,10 +178,9 @@ function PDFToImages() {
       if (!file) return
       setError(null)
       try {
-        const { pdfDoc: doc } = await loadPDF(file)
-        setPdfFile(file)
-        setPdfDoc(doc)
-        setPageCount(doc.numPages)
+        onOpenFile(file)
+        setLocalFile(null)
+        setLocalDoc(null)
       } catch (err) {
         setError(err.message)
       }
@@ -242,12 +244,12 @@ function PDFToImages() {
           <div>
             <p className="font-medium text-gray-700 text-sm">{pdfFile.name}</p>
             <p className="text-xs text-gray-400">{pageCount} pages · {formatBytes(pdfFile.size)}</p>
+            {!localFile && <p className="text-xs text-blue-500 mt-0.5">Using globally loaded file</p>}
           </div>
-          <button onClick={() => { setPdfFile(null); setPdfDoc(null); setPageCount(0) }} className="text-gray-400 hover:text-red-500">
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
+          <div {...getRootProps()} className="cursor-pointer">
+            <input {...getInputProps()} />
+            <span className="text-xs text-blue-500 hover:text-blue-700 underline">Change</span>
+          </div>
         </div>
       )}
 
@@ -371,16 +373,32 @@ function TextToPDF() {
 }
 
 // ---- PDF → Text ----
-function PDFToText() {
-  const [pdfFile, setPdfFile] = useState(null)
-  const [pdfDoc, setPdfDoc] = useState(null)
-  const [pageCount, setPageCount] = useState(0)
+function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPageCount, onOpenFile }) {
+  const [localFile, setLocalFile] = useState(null)
+  const [localDoc, setLocalDoc] = useState(null)
   const [extracting, setExtracting] = useState(false)
   const [error, setError] = useState(null)
-  const [pageTexts, setPageTexts] = useState([]) // array of strings, one per page
-  const [viewMode, setViewMode] = useState('combined') // 'combined' | 'per-page'
+  const [pageTexts, setPageTexts] = useState([])
+  const [viewMode, setViewMode] = useState('combined')
   const [activePage, setActivePage] = useState(1)
   const [copied, setCopied] = useState(false)
+  // Track last doc we extracted for, to reset extracted text on file change
+  const lastDocRef = useRef(null)
+
+  const pdfFile = localFile || globalFile
+  const pdfDoc = localDoc || globalDoc
+  const pageCount = localDoc ? localDoc.numPages : (globalPageCount || 0)
+
+  // Reset extracted text when the active doc changes
+  useEffect(() => {
+    if (pdfDoc && pdfDoc !== lastDocRef.current) {
+      lastDocRef.current = pdfDoc
+      setPageTexts([])
+      setCopied(false)
+      setActivePage(1)
+      setError(null)
+    }
+  }, [pdfDoc])
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     accept: { 'application/pdf': ['.pdf'] },
@@ -390,11 +408,9 @@ function PDFToText() {
       setPageTexts([])
       setCopied(false)
       try {
-        const { pdfDoc: doc } = await loadPDF(file)
-        setPdfFile(file)
-        setPdfDoc(doc)
-        setPageCount(doc.numPages)
-        setActivePage(1)
+        onOpenFile(file)
+        setLocalFile(null)
+        setLocalDoc(null)
       } catch (err) {
         setError(err.message)
       }
@@ -462,9 +478,8 @@ function PDFToText() {
   }
 
   const handleReset = () => {
-    setPdfFile(null)
-    setPdfDoc(null)
-    setPageCount(0)
+    setLocalFile(null)
+    setLocalDoc(null)
     setPageTexts([])
     setError(null)
     setCopied(false)
@@ -494,13 +509,13 @@ function PDFToText() {
             <div>
               <p className="font-medium text-gray-700 text-sm">{pdfFile.name}</p>
               <p className="text-xs text-gray-400">{pageCount} page{pageCount !== 1 ? 's' : ''} · {formatBytes(pdfFile.size)}</p>
+              {!localFile && <p className="text-xs text-blue-500 mt-0.5">Using globally loaded file</p>}
             </div>
           </div>
-          <button onClick={handleReset} className="text-gray-400 hover:text-red-500 p-1">
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
+          <div {...getRootProps()} className="cursor-pointer">
+            <input {...getInputProps()} />
+            <span className="text-xs text-blue-500 hover:text-blue-700 underline">Change</span>
+          </div>
         </div>
       )}
 
@@ -629,8 +644,9 @@ function PDFToText() {
 }
 
 // ---- Main Convert component ----
-export default function Convert() {
+export default function Convert({ pdfFile, pdfDoc, pageCount, onOpenFile }) {
   const [tab, setTab] = useState('img-to-pdf')
+  const fileProps = { pdfFile, pdfDoc, pageCount, onOpenFile }
 
   const tabs = [
     { id: 'img-to-pdf', label: 'Images → PDF' },
@@ -659,9 +675,9 @@ export default function Convert() {
 
       <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6">
         {tab === 'img-to-pdf' && <ImageToPDF />}
-        {tab === 'pdf-to-img' && <PDFToImages />}
+        {tab === 'pdf-to-img' && <PDFToImages {...fileProps} />}
         {tab === 'text-to-pdf' && <TextToPDF />}
-        {tab === 'pdf-to-text' && <PDFToText />}
+        {tab === 'pdf-to-text' && <PDFToText {...fileProps} />}
       </div>
     </div>
   )
