@@ -276,7 +276,7 @@ export default function MergeSplit({ pdfFile: globalFile, pdfDoc: globalDoc, pag
         var bytes = await item.file.arrayBuffer()
         console.log('[Merge] ArrayBuffer loaded for', item.file.name, bytes.byteLength, 'bytes')
 
-        var doc = await PDFDocument.load(bytes)
+        var doc = await PDFDocument.load(bytes, { ignoreEncryption: true })
         console.log('[Merge] pdf-lib loaded', item.file.name, ', pages:', doc.getPageCount())
 
         var pageIndices
@@ -315,7 +315,7 @@ export default function MergeSplit({ pdfFile: globalFile, pdfDoc: globalDoc, pag
     setSplitting(true)
     try {
       var srcBytes = await splitFile.arrayBuffer()
-      var srcDoc = await PDFDocument.load(srcBytes)
+      var srcDoc = await PDFDocument.load(srcBytes, { ignoreEncryption: true })
       var baseName = getBaseName(splitFile.name)
 
       if (splitMode === 'individual') {

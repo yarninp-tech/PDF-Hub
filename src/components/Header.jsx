@@ -1,4 +1,4 @@
-export default function Header({ pdfFile, onClose }) {
+export default function Header({ pdfFile, onClose, onClickOpen }) {
   return (
     <header className="bg-slate-900 text-white px-6 py-3 flex items-center justify-between shadow-lg">
       <div className="flex items-center gap-3">
@@ -11,25 +11,46 @@ export default function Header({ pdfFile, onClose }) {
         </span>
       </div>
 
-      {pdfFile && (
-        <div className="flex items-center gap-3 text-sm">
-          <div className="flex items-center gap-2 bg-slate-700 px-3 py-1.5 rounded-full">
-            <svg className="w-4 h-4 text-blue-400" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z"/>
-            </svg>
-            <span className="text-gray-200 max-w-xs truncate">{pdfFile.name}</span>
-          </div>
+      <div className="flex items-center gap-3 text-sm">
+        {pdfFile ? (
+          <>
+            <div className="flex items-center gap-2 bg-slate-700 px-3 py-1.5 rounded-full">
+              <svg className="w-4 h-4 text-blue-400" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z"/>
+              </svg>
+              <span className="text-gray-200 max-w-xs truncate">{pdfFile.name}</span>
+            </div>
+            <button
+              onClick={onClickOpen}
+              className="flex items-center gap-1.5 bg-slate-700 hover:bg-slate-600 transition-colors px-3 py-1.5 rounded-full text-gray-200 text-sm"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+              </svg>
+              Change
+            </button>
+            <button
+              onClick={onClose}
+              className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 transition-colors px-3 py-1.5 rounded-full text-white text-sm"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+              Close
+            </button>
+          </>
+        ) : (
           <button
-            onClick={onClose}
-            className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 transition-colors px-3 py-1.5 rounded-full text-white text-sm"
+            onClick={onClickOpen}
+            className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 transition-colors px-4 py-1.5 rounded-full text-white text-sm font-medium"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
             </svg>
-            Close
+            Open PDF
           </button>
-        </div>
-      )}
+        )}
+      </div>
     </header>
   )
 }
