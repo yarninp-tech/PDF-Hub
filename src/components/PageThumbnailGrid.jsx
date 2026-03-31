@@ -4,28 +4,31 @@ import { useState, useEffect, useRef } from 'react'
  * Visual page thumbnail grid with checkbox selection.
  *
  * Props:
- *   pdfDoc        — loaded pdfjs-dist document object (for rendering thumbnails)
+ *   pdfDoc        — loaded pdfjs-dist document object
  *   selectedPages — number[] of selected 1-based page numbers
  *   onChange      — function(number[]) called when selection changes
  */
 export default function PageThumbnailGrid({ pdfDoc, selectedPages, onChange }) {
   // thumbnails: { pageNum: number, dataUrl: string|null, loading: boolean }[]
   const [thumbnails, setThumbnails] = useState([])
+  const [renderedCount, setRenderedCount] = useState(0)
   const cancelRef = useRef({ value: false })
 
   const totalPages = pdfDoc ? pdfDoc.numPages : 0
 
-  // When pdfDoc changes: reset thumbnail list and start background rendering
   useEffect(function() {
     if (!pdfDoc) {
       setThumbnails([])
+      setRenderedCount(0)
       return
     }
 
-    // Cancel any in-progress render from the previous pdfDoc
+    // Cancel any in-progress render loop from a previous pdfDoc
     cancelRef.current.value = true
     var cancelled = { value: false }
     cancelRef.current = cancelled
+
+    setRenderedCount(0)
 
     var initial = []
     for (var p = 1; p <= pdfDoc.numPages; p++) {
@@ -36,13 +39,16 @@ export default function PageThumbnailGrid({ pdfDoc, selectedPages, onChange }) {
     async function renderAll() {
       for (var i = 0; i < initial.length; i++) {
         if (cancelled.value) break
+
+        // Yield to the UI thread between each render so the browser stays responsive
+        await new Promise(function(resolve) { setTimeout(resolve, 0) })
+        if (cancelled.value) break
+
         var pageNum = initial[i].pageNum
         try {
-          console.log('[PageThumbnailGrid] Rendering thumbnail for page', pageNum)
           var page = await pdfDoc.getPage(pageNum)
-          var viewport = page.getViewport({ scale: 1 })
-          var scale = 96 / viewport.width
-          var scaledViewport = page.getViewport({ scale: scale })
+          // scale 0.3 keeps thumbnail rendering fast without blocking the thread
+          var scaledViewport = page.getViewport({ scale: 0.3 })
           var canvas = document.createElement('canvas')
           canvas.width = scaledViewport.width
           canvas.height = scaledViewport.height
@@ -50,8 +56,7 @@ export default function PageThumbnailGrid({ pdfDoc, selectedPages, onChange }) {
           var renderTask = page.render({ canvasContext: ctx, viewport: scaledViewport })
           await renderTask.promise
           if (cancelled.value) break
-          var dataUrl = canvas.toDataURL('image/jpeg', 0.75)
-          console.log('[PageThumbnailGrid] Page', pageNum, 'thumbnail ready')
+          var dataUrl = canvas.toDataURL('image/jpeg', 0.7)
           var pn = pageNum
           setThumbnails(function(prev) {
             return prev.map(function(t) {
@@ -59,8 +64,7 @@ export default function PageThumbnailGrid({ pdfDoc, selectedPages, onChange }) {
               return t
             })
           })
-        } catch (err) {
-          console.warn('[PageThumbnailGrid] Failed to render page', pageNum, err)
+        } catch (_) {
           if (cancelled.value) break
           var pn2 = pageNum
           setThumbnails(function(prev) {
@@ -70,6 +74,7 @@ export default function PageThumbnailGrid({ pdfDoc, selectedPages, onChange }) {
             })
           })
         }
+        setRenderedCount(function(c) { return c + 1 })
       }
     }
 
@@ -121,10 +126,15 @@ export default function PageThumbnailGrid({ pdfDoc, selectedPages, onChange }) {
         <span className="text-xs text-gray-400">
           {selectedPages.length} of {totalPages} page{totalPages !== 1 ? 's' : ''} selected
         </span>
+        {renderedCount < totalPages && (
+          <span className="text-xs text-blue-400 ml-auto">
+            Loading page {renderedCount + 1} of {totalPages}…
+          </span>
+        )}
       </div>
 
       {/* Thumbnail grid */}
-      <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(78px, 1fr))' }}>
+      <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(72px, 1fr))' }}>
         {thumbnails.map(function(thumb) {
           var pageNum = thumb.pageNum
           var dataUrl = thumb.dataUrl
@@ -138,7 +148,7 @@ export default function PageThumbnailGrid({ pdfDoc, selectedPages, onChange }) {
             >
               <div className="relative bg-gray-100">
                 {loading ? (
-                  <div className="flex items-center justify-center" style={{ minHeight: 106 }}>
+                  <div className="flex items-center justify-center" style={{ minHeight: 90 }}>
                     <svg className="w-4 h-4 animate-spin text-gray-300" fill="none" viewBox="0 0 24 24">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
@@ -151,10 +161,10 @@ export default function PageThumbnailGrid({ pdfDoc, selectedPages, onChange }) {
                     className={'w-full block transition-opacity ' + (selected ? 'opacity-100' : 'opacity-30')}
                   />
                 ) : (
-                  <div className="flex items-center justify-center text-gray-300 text-xs" style={{ minHeight: 106 }}>—</div>
+                  <div className="flex items-center justify-center text-gray-300 text-xs" style={{ minHeight: 90 }}>—</div>
                 )}
-                {/* Checkbox overlay — top-left corner */}
-                <div className="absolute top-1.5 left-1.5 pointer-events-none">
+                {/* Checkbox overlay */}
+                <div className="absolute top-1 left-1 pointer-events-none">
                   <div className={'w-4 h-4 rounded border-2 flex items-center justify-center shadow-sm ' + (selected ? 'bg-blue-600 border-blue-600' : 'bg-white border-gray-400')}>
                     {selected && (
                       <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -164,7 +174,6 @@ export default function PageThumbnailGrid({ pdfDoc, selectedPages, onChange }) {
                   </div>
                 </div>
               </div>
-              {/* Page number label */}
               <div className={'text-center text-xs py-0.5 font-medium ' + (selected ? 'text-blue-600 bg-blue-50' : 'text-gray-400 bg-white')}>
                 {pageNum}
               </div>

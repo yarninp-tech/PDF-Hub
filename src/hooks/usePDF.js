@@ -10,17 +10,22 @@ export function usePDF() {
   const [error, setError] = useState(null)
 
   const openFile = useCallback(async (file) => {
+    // Show the file name immediately — don't wait for pdfjs to finish loading
+    setPdfFile(file)
+    setPdfDoc(null)
+    setPdfBytes(null)
+    setPageCount(0)
     setError(null)
     setLoading(true)
     try {
       validateFile(file)
       const { pdfDoc: doc, bytes } = await loadPDF(file)
-      setPdfFile(file)
       setPdfDoc(doc)
       setPdfBytes(bytes)
       setPageCount(doc.numPages)
     } catch (err) {
       setError(err.message)
+      setPdfFile(null)
     } finally {
       setLoading(false)
     }
