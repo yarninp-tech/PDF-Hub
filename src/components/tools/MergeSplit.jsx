@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useDropzone } from 'react-dropzone'
 import { PDFDocument } from 'pdf-lib'
 import JSZip from 'jszip'
@@ -113,6 +113,35 @@ export default function MergeSplit({ pdfFile: globalFile, pdfDoc: globalDoc, pag
   const [mergeError, setMergeError] = useState(null)
   const dragIndexRef = useRef(null)
   const [dragOverIndex, setDragOverIndex] = useState(null)
+
+  // Sync globally loaded file as first item in merge list
+  useEffect(function() {
+    if (!globalFile || !globalDoc) {
+      setMergeItems(function(prev) {
+        return prev.filter(function(it) { return it.id !== '__global__' })
+      })
+      return
+    }
+    var pc = globalDoc.numPages
+    var sp = []
+    for (var i = 1; i <= pc; i++) sp.push(i)
+    var globalItem = {
+      id: '__global__',
+      file: globalFile,
+      pageCount: pc,
+      thumbnailDoc: globalDoc,
+      selectedPages: sp,
+      expanded: false,
+      loading: false,
+      loadError: null,
+    }
+    setMergeItems(function(prev) {
+      if (prev.length > 0 && prev[0].id === '__global__') {
+        return [globalItem].concat(prev.slice(1))
+      }
+      return [globalItem].concat(prev)
+    })
+  }, [globalFile, globalDoc])
 
   // Split state — use global file as default, allow local override
   const [localSplitFile, setLocalSplitFile] = useState(null)

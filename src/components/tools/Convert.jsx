@@ -2,6 +2,8 @@ import { useState, useEffect, useRef } from 'react'
 import { useDropzone } from 'react-dropzone'
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
 import JSZip from 'jszip'
+import { Document, Packer, Paragraph, TextRun, HeadingLevel } from 'docx'
+import { saveAs } from 'file-saver'
 import { downloadBytes, downloadBlob, getBaseName, formatBytes } from '../../utils/fileUtils'
 import PageThumbnailGrid from '../PageThumbnailGrid'
 
@@ -372,31 +374,48 @@ function TextToPDF() {
   )
 }
 
-// ---- PDF → Text extraction (no for...of, no spread on pdfjs objects) ----
-async function extractTextFromPDF(arrayBuffer, selectedPages) {
+// ---- PDF → Text extraction ----
+// Processes pages in batches of 5, yields to browser between batches.
+// onProgress(current, total) called after each page.
+// cancelRef.current = true stops the loop early.
+// Returns { pageNum, text }[]
+async function extractTextFromPDF(arrayBuffer, selectedPages, onProgress, cancelRef) {
   const pdfjsLib = await import('pdfjs-dist')
   pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`
 
   const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer.slice(0) })
   const pdf = await loadingTask.promise
   const totalPages = pdf.numPages
-  const pagesToExtract = selectedPages && selectedPages.length > 0 ? selectedPages : Array.from({ length: totalPages }, (_, i) => i + 1)
+  const pagesToExtract = selectedPages && selectedPages.length > 0
+    ? selectedPages
+    : Array.from({ length: totalPages }, (_, i) => i + 1)
 
-  let fullText = ''
+  const BATCH_SIZE = 5
+  const results = []
 
-  for (let i = 0; i < pagesToExtract.length; i++) {
-    const pageNum = pagesToExtract[i]
-    const page = await pdf.getPage(pageNum)
-    const textContent = await page.getTextContent()
-    const items = textContent.items
-    let pageText = ''
-    for (let j = 0; j < items.length; j++) {
-      pageText += items[j].str + ' '
+  for (let i = 0; i < pagesToExtract.length; i += BATCH_SIZE) {
+    if (cancelRef && cancelRef.current) break
+
+    const batchEnd = Math.min(i + BATCH_SIZE, pagesToExtract.length)
+    for (let j = i; j < batchEnd; j++) {
+      if (cancelRef && cancelRef.current) break
+      const pageNum = pagesToExtract[j]
+      const page = await pdf.getPage(pageNum)
+      const textContent = await page.getTextContent()
+      const items = textContent.items
+      let pageText = ''
+      for (let k = 0; k < items.length; k++) {
+        pageText += items[k].str + ' '
+      }
+      results.push({ pageNum: pageNum, text: pageText.trim() })
+      if (onProgress) onProgress(j + 1, pagesToExtract.length)
     }
-    fullText += `\n--- Page ${pageNum} ---\n` + pageText.trim() + '\n'
+
+    // Yield to browser after each batch
+    await new Promise(function(resolve) { setTimeout(resolve, 0) })
   }
 
-  return fullText.trim()
+  return results
 }
 
 // ---- PDF → Text ----
@@ -404,27 +423,22 @@ function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPa
   const [localFile, setLocalFile] = useState(null)
   const [localDoc, setLocalDoc] = useState(null)
   const [extracting, setExtracting] = useState(false)
+  const [extractProgress, setExtractProgress] = useState(null) // { current, total }
   const [error, setError] = useState(null)
-  // pageTexts: { pageNum: number, text: string }[]
-  const [pageTexts, setPageTexts] = useState([])
-  // selectedPages: number[] of checked 1-based page numbers
+  const [pageTexts, setPageTexts] = useState([]) // { pageNum, text }[]
   const [selectedPages, setSelectedPages] = useState([])
-  const [viewMode, setViewMode] = useState('combined')
-  const [activePage, setActivePage] = useState(1)
-  const [copied, setCopied] = useState(false)
+  const cancelRef = useRef(false)
   const lastDocRef = useRef(null)
 
   const pdfFile = localFile || globalFile
   const pdfDoc = localDoc || globalDoc
   const pageCount = localDoc ? localDoc.numPages : (globalPageCount || 0)
 
-  // When a new doc is loaded: reset everything and pre-select all pages
+  // Reset and pre-select all pages when doc changes
   useEffect(function() {
     if (pdfDoc && pdfDoc !== lastDocRef.current) {
       lastDocRef.current = pdfDoc
       setPageTexts([])
-      setCopied(false)
-      setActivePage(1)
       setError(null)
       var all = []
       for (var i = 1; i <= pdfDoc.numPages; i++) all.push(i)
@@ -439,7 +453,6 @@ function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPa
       if (!file) return
       setError(null)
       setPageTexts([])
-      setCopied(false)
       try {
         onOpenFile(file)
         setLocalFile(null)
@@ -455,33 +468,32 @@ function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPa
     if (!pdfFile) return
     setError(null)
     setExtracting(true)
-    setCopied(false)
+    setPageTexts([])
+    cancelRef.current = false
+    var total = selectedPages.length > 0 ? selectedPages.length : pageCount
+    setExtractProgress({ current: 0, total: total })
+
     try {
-      console.log('[PDFToText] Starting extraction')
       var arrayBuffer = await pdfFile.arrayBuffer()
       console.log('[PDFToText] ArrayBuffer ready, byteLength:', arrayBuffer.byteLength)
 
-      var fullText = await extractTextFromPDF(arrayBuffer, selectedPages)
-      console.log('[PDFToText] Extraction complete, chars:', fullText.length)
+      var texts = await extractTextFromPDF(
+        arrayBuffer,
+        selectedPages,
+        function(current, total) { setExtractProgress({ current: current, total: total }) },
+        cancelRef
+      )
 
-      if (!fullText) throw new Error('SCANNED')
-
-      // Parse the "--- Page N ---\ntext" segments back into per-page objects for navigation
-      var texts = []
-      var chunks = fullText.split(/\n--- Page (\d+) ---\n/)
-      // chunks layout: ['', '1', 'text1', '2', 'text2', ...]
-      for (var i = 1; i < chunks.length; i += 2) {
-        var pageNum = parseInt(chunks[i], 10)
-        var text = chunks[i + 1] ? chunks[i + 1].trim() : ''
-        texts.push({ pageNum: pageNum, text: text })
+      if (cancelRef.current) {
+        setError('Extraction cancelled.')
+        return
       }
 
       var totalChars = 0
-      for (var k = 0; k < texts.length; k++) totalChars += texts[k].text.length
+      for (var i = 0; i < texts.length; i++) totalChars += texts[i].text.length
       if (totalChars === 0) throw new Error('SCANNED')
 
       setPageTexts(texts)
-      setActivePage(1)
     } catch (err) {
       console.error('[PDFToText] Extraction error:', err)
       if (err.message === 'SCANNED') {
@@ -491,45 +503,51 @@ function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPa
       }
     } finally {
       setExtracting(false)
+      setExtractProgress(null)
     }
   }
 
-  var combinedText = pageTexts
-    .map(function(item) { return '--- Page ' + item.pageNum + ' ---\n' + item.text })
-    .join('\n\n')
+  const handleCancel = function() { cancelRef.current = true }
 
-  var displayText = viewMode === 'combined'
-    ? combinedText
-    : (pageTexts[activePage - 1] ? pageTexts[activePage - 1].text : '')
+  const handleDownloadTxt = function() {
+    var lines = []
+    for (var i = 0; i < pageTexts.length; i++) {
+      lines.push('--- Page ' + pageTexts[i].pageNum + ' ---\n\n' + pageTexts[i].text)
+    }
+    saveAs(new Blob([lines.join('\n\n')], { type: 'text/plain;charset=utf-8' }), getBaseName(pdfFile.name) + '_extracted.txt')
+  }
 
-  const handleCopy = async function() {
+  const handleDownloadDocx = async function() {
     try {
-      await navigator.clipboard.writeText(displayText)
-      setCopied(true)
-      setTimeout(function() { setCopied(false) }, 2000)
-    } catch (_) {
-      setError('Failed to copy to clipboard.')
+      var children = [
+        new Paragraph({ text: 'Extracted Text — ' + pdfFile.name, heading: HeadingLevel.HEADING_1 }),
+      ]
+      for (var i = 0; i < pageTexts.length; i++) {
+        children.push(new Paragraph({ text: 'Page ' + pageTexts[i].pageNum, heading: HeadingLevel.HEADING_2 }))
+        children.push(new Paragraph({ children: [new TextRun(pageTexts[i].text)] }))
+        children.push(new Paragraph({ text: '' }))
+      }
+      var doc = new Document({ sections: [{ children: children }] })
+      var blob = await Packer.toBlob(doc)
+      saveAs(blob, getBaseName(pdfFile.name) + '_extracted.docx')
+    } catch (err) {
+      setError('Failed to create Word document: ' + err.message)
     }
   }
 
-  const handleDownload = function() {
-    var blob = new Blob([combinedText], { type: 'text/plain;charset=utf-8' })
-    var baseName = getBaseName(pdfFile.name)
-    downloadBlob(blob, baseName + '.txt')
+  // Preview text (built only after extraction)
+  var previewText = ''
+  for (var i = 0; i < pageTexts.length; i++) {
+    previewText += '--- Page ' + pageTexts[i].pageNum + ' ---\n\n' + pageTexts[i].text + '\n\n'
   }
-
-  // Label for the extract button during extraction
-  var extractingLabel = (function() {
-    if (selectedPages.length > 0 && selectedPages.length < pageCount) {
-      return 'Extracting pages: ' + selectedPages.join(', ') + '...'
-    }
-    return 'Extracting text...'
-  })()
+  previewText = previewText.trim()
+  var wordCount = previewText.split(/\s+/).filter(Boolean).length
 
   return (
     <div className="space-y-4">
       <h3 className="font-semibold text-gray-700">PDF to Text</h3>
 
+      {/* File info */}
       {!pdfFile ? (
         <div
           {...getRootProps()}
@@ -559,6 +577,7 @@ function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPa
         </div>
       )}
 
+      {/* Error */}
       {error && (
         <div className="flex items-start gap-2 bg-red-50 border border-red-200 rounded-xl px-4 py-3">
           <svg className="w-4 h-4 text-red-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -568,8 +587,8 @@ function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPa
         </div>
       )}
 
-      {/* Page thumbnail grid — shown when file loaded and text not yet extracted */}
-      {pdfFile && pdfDoc && pageTexts.length === 0 && (
+      {/* Page thumbnail grid — shown when no extraction in progress and no results yet */}
+      {pdfFile && pdfDoc && !extracting && pageTexts.length === 0 && (
         <div className="bg-gray-50 border border-gray-200 rounded-xl p-3">
           <p className="text-xs font-medium text-gray-500 mb-2">Select pages to extract</p>
           <PageThumbnailGrid
@@ -580,6 +599,25 @@ function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPa
         </div>
       )}
 
+      {/* Progress bar + cancel — shown during extraction */}
+      {extracting && extractProgress && (
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between text-xs text-gray-500">
+            <span>Extracting… page {extractProgress.current} of {extractProgress.total}</span>
+            <button onClick={handleCancel} className="text-red-500 hover:text-red-700 font-medium">
+              Cancel
+            </button>
+          </div>
+          <div className="w-full bg-gray-200 rounded-full h-1.5">
+            <div
+              className="bg-blue-500 h-1.5 rounded-full transition-all"
+              style={{ width: extractProgress.total > 0 ? (extractProgress.current / extractProgress.total * 100) + '%' : '0%' }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Extract button — hidden once results are shown */}
       {pageTexts.length === 0 && (
         <button
           onClick={handleExtract}
@@ -592,106 +630,53 @@ function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPa
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
               </svg>
-              {extractingLabel}
+              Extracting…
             </>
           ) : selectedPages.length === 0 ? 'Select at least one page' : 'Extract Text'}
         </button>
       )}
 
-      {pageTexts.length > 0 && (
-        <>
-          {/* View mode toggle + actions */}
-          <div className="flex items-center gap-2 flex-wrap">
-            <div className="flex bg-gray-100 p-0.5 rounded-lg">
-              <button
-                onClick={function() { setViewMode('combined') }}
-                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
-                  viewMode === 'combined' ? 'bg-white shadow text-blue-600' : 'text-gray-500 hover:text-gray-700'
-                }`}
-              >
-                All pages
-              </button>
-              <button
-                onClick={function() { setViewMode('per-page') }}
-                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
-                  viewMode === 'per-page' ? 'bg-white shadow text-blue-600' : 'text-gray-500 hover:text-gray-700'
-                }`}
-              >
-                Per page
-              </button>
-            </div>
-
-            {viewMode === 'per-page' && (
-              <div className="flex items-center gap-1">
-                <button
-                  onClick={function() { setActivePage(function(p) { return Math.max(1, p - 1) }) }}
-                  disabled={activePage === 1}
-                  className="p-1 rounded hover:bg-gray-100 disabled:opacity-40"
-                >
-                  <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                  </svg>
-                </button>
-                <span className="text-xs text-gray-600 px-1">
-                  Page {pageTexts[activePage - 1] ? pageTexts[activePage - 1].pageNum : ''} ({activePage} of {pageTexts.length})
-                </span>
-                <button
-                  onClick={function() { setActivePage(function(p) { return Math.min(pageTexts.length, p + 1) }) }}
-                  disabled={activePage === pageTexts.length}
-                  className="p-1 rounded hover:bg-gray-100 disabled:opacity-40"
-                >
-                  <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                  </svg>
-                </button>
-              </div>
-            )}
-
-            <div className="ml-auto flex items-center gap-2">
-              <button
-                onClick={handleCopy}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-xs font-medium transition-colors"
-              >
-                {copied ? (
-                  <>
-                    <svg className="w-3.5 h-3.5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                    </svg>
-                    Copied!
-                  </>
-                ) : (
-                  <>
-                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                    </svg>
-                    Copy
-                  </>
-                )}
-              </button>
-              <button
-                onClick={handleDownload}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium transition-colors"
-              >
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                </svg>
-                Download .txt
-              </button>
-            </div>
-          </div>
-
-          {/* Text area */}
+      {/* Results — only shown after extraction is fully complete */}
+      {!extracting && pageTexts.length > 0 && (
+        <div className="space-y-3">
           <textarea
             readOnly
-            value={displayText}
-            rows={14}
-            className="w-full px-3 py-2 border border-gray-200 rounded-xl text-sm font-mono bg-gray-50 resize-y focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-700"
+            value={previewText}
+            className="w-full px-3 py-2 border border-gray-200 rounded-xl text-sm font-mono bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-700 resize-none"
+            style={{ height: 300, overflowY: 'scroll' }}
           />
-
           <p className="text-xs text-gray-400 text-right">
-            {displayText.length.toLocaleString()} characters · {displayText.split(/\s+/).filter(Boolean).length.toLocaleString()} words
+            {previewText.length.toLocaleString()} characters · {wordCount.toLocaleString()} words
           </p>
-        </>
+
+          <div className="flex gap-2">
+            <button
+              onClick={handleDownloadDocx}
+              className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-sm"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+              </svg>
+              Download as Word (.docx)
+            </button>
+            <button
+              onClick={handleDownloadTxt}
+              className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium rounded-xl transition-colors text-sm"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+              </svg>
+              Download as Text (.txt)
+            </button>
+          </div>
+
+          <button
+            onClick={function() { setPageTexts([]) }}
+            className="w-full py-2 text-sm text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-xl transition-colors"
+          >
+            ← Extract different pages
+          </button>
+        </div>
       )}
     </div>
   )
