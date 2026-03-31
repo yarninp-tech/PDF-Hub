@@ -94,6 +94,7 @@ function FileListItem({ item, index, isDragOver, onRemove, onSelectedPagesChange
             pdfDoc={item.thumbnailDoc}
             selectedPages={item.selectedPages}
             onChange={onSelectedPagesChange}
+            columns={5}
           />
         </div>
       )}

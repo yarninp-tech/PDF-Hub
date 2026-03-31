@@ -2,7 +2,6 @@ import { useState, useEffect, useRef } from 'react'
 import { useDropzone } from 'react-dropzone'
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
 import JSZip from 'jszip'
-import { loadPDF, pdfjsLib } from '../../utils/pdfUtils'
 import { downloadBytes, downloadBlob, getBaseName, formatBytes } from '../../utils/fileUtils'
 import PageThumbnailGrid from '../PageThumbnailGrid'
 
@@ -373,6 +372,33 @@ function TextToPDF() {
   )
 }
 
+// ---- PDF → Text extraction (no for...of, no spread on pdfjs objects) ----
+async function extractTextFromPDF(arrayBuffer, selectedPages) {
+  const pdfjsLib = await import('pdfjs-dist')
+  pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`
+
+  const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer.slice(0) })
+  const pdf = await loadingTask.promise
+  const totalPages = pdf.numPages
+  const pagesToExtract = selectedPages && selectedPages.length > 0 ? selectedPages : Array.from({ length: totalPages }, (_, i) => i + 1)
+
+  let fullText = ''
+
+  for (let i = 0; i < pagesToExtract.length; i++) {
+    const pageNum = pagesToExtract[i]
+    const page = await pdf.getPage(pageNum)
+    const textContent = await page.getTextContent()
+    const items = textContent.items
+    let pageText = ''
+    for (let j = 0; j < items.length; j++) {
+      pageText += items[j].str + ' '
+    }
+    fullText += `\n--- Page ${pageNum} ---\n` + pageText.trim() + '\n'
+  }
+
+  return fullText.trim()
+}
+
 // ---- PDF → Text ----
 function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPageCount, onOpenFile }) {
   const [localFile, setLocalFile] = useState(null)
@@ -435,34 +461,24 @@ function PDFToText({ pdfFile: globalFile, pdfDoc: globalDoc, pageCount: globalPa
       var arrayBuffer = await pdfFile.arrayBuffer()
       console.log('[PDFToText] ArrayBuffer ready, byteLength:', arrayBuffer.byteLength)
 
-      var loadingTask = pdfjsLib.getDocument({ data: arrayBuffer, useWorkerFetch: false, isEvalSupported: false })
-      console.log('[PDFToText] getDocument called')
-      var pdf = await loadingTask.promise
-      console.log('[PDFToText] PDF loaded, numPages:', pdf.numPages)
+      var fullText = await extractTextFromPDF(arrayBuffer, selectedPages)
+      console.log('[PDFToText] Extraction complete, chars:', fullText.length)
 
-      var pagesToProcess = selectedPages.length > 0
-        ? selectedPages
-        : (function() { var a = []; for (var i = 1; i <= pdf.numPages; i++) a.push(i); return a })()
-      console.log('[PDFToText] Pages to process:', pagesToProcess)
+      if (!fullText) throw new Error('SCANNED')
 
+      // Parse the "--- Page N ---\ntext" segments back into per-page objects for navigation
       var texts = []
-      for (var i = 0; i < pagesToProcess.length; i++) {
-        var pageNum = pagesToProcess[i]
-        console.log('[PDFToText] Getting page', pageNum)
-        var page = await pdf.getPage(pageNum)
-        console.log('[PDFToText] Got page', pageNum, ', getting text content')
-        var textContent = await page.getTextContent()
-        console.log('[PDFToText] textContent items:', textContent.items.length)
-        var pageText = textContent.items.map(function(item) { return item.str }).join(' ')
-          .replace(/[ \t]{2,}/g, ' ').trim()
-        console.log('[PDFToText] Page', pageNum, ':', pageText.length, 'chars')
-        texts.push({ pageNum: pageNum, text: pageText })
+      var chunks = fullText.split(/\n--- Page (\d+) ---\n/)
+      // chunks layout: ['', '1', 'text1', '2', 'text2', ...]
+      for (var i = 1; i < chunks.length; i += 2) {
+        var pageNum = parseInt(chunks[i], 10)
+        var text = chunks[i + 1] ? chunks[i + 1].trim() : ''
+        texts.push({ pageNum: pageNum, text: text })
       }
 
-      var totalChars = texts.reduce(function(sum, t) { return sum + t.text.length }, 0)
-      if (totalChars === 0) {
-        throw new Error('SCANNED')
-      }
+      var totalChars = 0
+      for (var k = 0; k < texts.length; k++) totalChars += texts[k].text.length
+      if (totalChars === 0) throw new Error('SCANNED')
 
       setPageTexts(texts)
       setActivePage(1)

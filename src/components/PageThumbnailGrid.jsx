@@ -7,8 +7,9 @@ import { useState, useEffect, useRef } from 'react'
  *   pdfDoc        — loaded pdfjs-dist document object
  *   selectedPages — number[] of selected 1-based page numbers
  *   onChange      — function(number[]) called when selection changes
+ *   columns       — optional fixed column count; defaults to auto-fill
  */
-export default function PageThumbnailGrid({ pdfDoc, selectedPages, onChange }) {
+export default function PageThumbnailGrid({ pdfDoc, selectedPages, onChange, columns }) {
   // thumbnails: { pageNum: number, dataUrl: string|null, loading: boolean }[]
   const [thumbnails, setThumbnails] = useState([])
   const [renderedCount, setRenderedCount] = useState(0)
@@ -47,8 +48,8 @@ export default function PageThumbnailGrid({ pdfDoc, selectedPages, onChange }) {
         var pageNum = initial[i].pageNum
         try {
           var page = await pdfDoc.getPage(pageNum)
-          // scale 0.3 keeps thumbnail rendering fast without blocking the thread
-          var scaledViewport = page.getViewport({ scale: 0.3 })
+          // scale 0.25 keeps thumbnail rendering fast without blocking the thread
+          var scaledViewport = page.getViewport({ scale: 0.25 })
           var canvas = document.createElement('canvas')
           canvas.width = scaledViewport.width
           canvas.height = scaledViewport.height
@@ -134,7 +135,7 @@ export default function PageThumbnailGrid({ pdfDoc, selectedPages, onChange }) {
       </div>
 
       {/* Thumbnail grid */}
-      <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(72px, 1fr))' }}>
+      <div className="grid gap-2" style={{ gridTemplateColumns: columns ? 'repeat(' + columns + ', 1fr)' : 'repeat(auto-fill, minmax(72px, 1fr))' }}>
         {thumbnails.map(function(thumb) {
           var pageNum = thumb.pageNum
           var dataUrl = thumb.dataUrl
@@ -158,7 +159,7 @@ export default function PageThumbnailGrid({ pdfDoc, selectedPages, onChange }) {
                   <img
                     src={dataUrl}
                     alt={'Page ' + pageNum}
-                    className={'w-full block transition-opacity ' + (selected ? 'opacity-100' : 'opacity-30')}
+                    className={'w-full block transition-opacity ' + (selected ? 'opacity-100' : 'opacity-50')}
                   />
                 ) : (
                   <div className="flex items-center justify-center text-gray-300 text-xs" style={{ minHeight: 90 }}>—</div>
