@@ -370,6 +370,264 @@ function TextToPDF() {
   )
 }
 
+// ---- PDF → Text ----
+function PDFToText() {
+  const [pdfFile, setPdfFile] = useState(null)
+  const [pdfDoc, setPdfDoc] = useState(null)
+  const [pageCount, setPageCount] = useState(0)
+  const [extracting, setExtracting] = useState(false)
+  const [error, setError] = useState(null)
+  const [pageTexts, setPageTexts] = useState([]) // array of strings, one per page
+  const [viewMode, setViewMode] = useState('combined') // 'combined' | 'per-page'
+  const [activePage, setActivePage] = useState(1)
+  const [copied, setCopied] = useState(false)
+
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    accept: { 'application/pdf': ['.pdf'] },
+    onDrop: async ([file]) => {
+      if (!file) return
+      setError(null)
+      setPageTexts([])
+      setCopied(false)
+      try {
+        const { pdfDoc: doc } = await loadPDF(file)
+        setPdfFile(file)
+        setPdfDoc(doc)
+        setPageCount(doc.numPages)
+        setActivePage(1)
+      } catch (err) {
+        setError(err.message)
+      }
+    },
+    multiple: false,
+  })
+
+  const handleExtract = async () => {
+    if (!pdfDoc) return
+    setError(null)
+    setExtracting(true)
+    setCopied(false)
+    try {
+      const texts = []
+      for (let i = 1; i <= pageCount; i++) {
+        const page = await pdfDoc.getPage(i)
+        const content = await page.getTextContent()
+        const pageText = content.items
+          .map(item => ('str' in item ? item.str : ''))
+          .join(' ')
+          .replace(/ {2,}/g, ' ')
+          .trim()
+        texts.push(pageText)
+      }
+
+      const totalChars = texts.reduce((sum, t) => sum + t.length, 0)
+      if (totalChars === 0) {
+        throw new Error('SCANNED')
+      }
+
+      setPageTexts(texts)
+    } catch (err) {
+      if (err.message === 'SCANNED') {
+        setError('This PDF appears to be scanned. No text could be extracted.')
+      } else {
+        setError('Extraction failed: ' + err.message)
+      }
+    } finally {
+      setExtracting(false)
+    }
+  }
+
+  const combinedText = pageTexts
+    .map((t, i) => `--- Page ${i + 1} ---\n${t}`)
+    .join('\n\n')
+
+  const displayText = viewMode === 'combined'
+    ? combinedText
+    : (pageTexts[activePage - 1] || '')
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(displayText)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch (_) {
+      setError('Failed to copy to clipboard.')
+    }
+  }
+
+  const handleDownload = () => {
+    const blob = new Blob([combinedText], { type: 'text/plain;charset=utf-8' })
+    const baseName = getBaseName(pdfFile.name)
+    downloadBlob(blob, `${baseName}.txt`)
+  }
+
+  const handleReset = () => {
+    setPdfFile(null)
+    setPdfDoc(null)
+    setPageCount(0)
+    setPageTexts([])
+    setError(null)
+    setCopied(false)
+    setActivePage(1)
+  }
+
+  return (
+    <div className="space-y-4">
+      <h3 className="font-semibold text-gray-700">PDF to Text</h3>
+
+      {!pdfFile ? (
+        <div
+          {...getRootProps()}
+          className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-colors ${
+            isDragActive ? 'border-blue-500 bg-blue-50' : 'border-gray-300 hover:border-blue-400 hover:bg-gray-50'
+          }`}
+        >
+          <input {...getInputProps()} />
+          <p className="text-gray-500 text-sm">Drop a PDF file here to extract text</p>
+        </div>
+      ) : (
+        <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <svg className="w-5 h-5 text-red-400 flex-shrink-0" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z"/>
+            </svg>
+            <div>
+              <p className="font-medium text-gray-700 text-sm">{pdfFile.name}</p>
+              <p className="text-xs text-gray-400">{pageCount} page{pageCount !== 1 ? 's' : ''} · {formatBytes(pdfFile.size)}</p>
+            </div>
+          </div>
+          <button onClick={handleReset} className="text-gray-400 hover:text-red-500 p-1">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      )}
+
+      {error && (
+        <div className="flex items-start gap-2 bg-red-50 border border-red-200 rounded-xl px-4 py-3">
+          <svg className="w-4 h-4 text-red-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+          </svg>
+          <p className="text-red-600 text-sm">{error}</p>
+        </div>
+      )}
+
+      {pageTexts.length === 0 && (
+        <button
+          onClick={handleExtract}
+          disabled={extracting || !pdfFile}
+          className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-medium rounded-xl transition-colors flex items-center justify-center gap-2"
+        >
+          {extracting ? (
+            <>
+              <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+              </svg>
+              Extracting text...
+            </>
+          ) : 'Extract Text'}
+        </button>
+      )}
+
+      {pageTexts.length > 0 && (
+        <>
+          {/* View mode toggle + actions */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex bg-gray-100 p-0.5 rounded-lg">
+              <button
+                onClick={() => setViewMode('combined')}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+                  viewMode === 'combined' ? 'bg-white shadow text-blue-600' : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                All pages
+              </button>
+              <button
+                onClick={() => setViewMode('per-page')}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+                  viewMode === 'per-page' ? 'bg-white shadow text-blue-600' : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                Per page
+              </button>
+            </div>
+
+            {viewMode === 'per-page' && (
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setActivePage(p => Math.max(1, p - 1))}
+                  disabled={activePage === 1}
+                  className="p-1 rounded hover:bg-gray-100 disabled:opacity-40"
+                >
+                  <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                  </svg>
+                </button>
+                <span className="text-xs text-gray-600 px-1">Page {activePage} / {pageCount}</span>
+                <button
+                  onClick={() => setActivePage(p => Math.min(pageCount, p + 1))}
+                  disabled={activePage === pageCount}
+                  className="p-1 rounded hover:bg-gray-100 disabled:opacity-40"
+                >
+                  <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </button>
+              </div>
+            )}
+
+            <div className="ml-auto flex items-center gap-2">
+              <button
+                onClick={handleCopy}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-xs font-medium transition-colors"
+              >
+                {copied ? (
+                  <>
+                    <svg className="w-3.5 h-3.5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                    Copied!
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                    Copy
+                  </>
+                )}
+              </button>
+              <button
+                onClick={handleDownload}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium transition-colors"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                </svg>
+                Download .txt
+              </button>
+            </div>
+          </div>
+
+          {/* Text area */}
+          <textarea
+            readOnly
+            value={displayText}
+            rows={14}
+            className="w-full px-3 py-2 border border-gray-200 rounded-xl text-sm font-mono bg-gray-50 resize-y focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-700"
+          />
+
+          <p className="text-xs text-gray-400 text-right">
+            {displayText.length.toLocaleString()} characters · {displayText.split(/\s+/).filter(Boolean).length.toLocaleString()} words
+          </p>
+        </>
+      )}
+    </div>
+  )
+}
+
 // ---- Main Convert component ----
 export default function Convert() {
   const [tab, setTab] = useState('img-to-pdf')
@@ -378,13 +636,14 @@ export default function Convert() {
     { id: 'img-to-pdf', label: 'Images → PDF' },
     { id: 'pdf-to-img', label: 'PDF → Images' },
     { id: 'text-to-pdf', label: 'Text → PDF' },
+    { id: 'pdf-to-text', label: 'PDF → Text' },
   ]
 
   return (
     <div className="p-6 max-w-3xl mx-auto w-full">
       <h2 className="text-2xl font-bold text-gray-800 mb-6">Convert</h2>
 
-      <div className="flex gap-1 mb-6 bg-gray-100 p-1 rounded-lg w-fit">
+      <div className="flex gap-1 mb-6 bg-gray-100 p-1 rounded-lg w-fit flex-wrap">
         {tabs.map(t => (
           <button
             key={t.id}
@@ -402,6 +661,7 @@ export default function Convert() {
         {tab === 'img-to-pdf' && <ImageToPDF />}
         {tab === 'pdf-to-img' && <PDFToImages />}
         {tab === 'text-to-pdf' && <TextToPDF />}
+        {tab === 'pdf-to-text' && <PDFToText />}
       </div>
     </div>
   )
